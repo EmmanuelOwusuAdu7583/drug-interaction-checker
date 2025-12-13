@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Drug Interaction Checker</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #f0f4f8;
+            color: #333;
+        }
+
+        header {
+            background: linear-gradient(135deg, #234e52, #2c7a7b);
+            color: white;
+            padding: 20px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+        }
+
+        header h1 { font-size: 22px; font-weight: 700; }
+        header p { font-size: 13px; opacity: 0.85; margin-top: 4px; }
+
+        .container { max-width: 1200px; margin: 0 auto; padding: 30px 20px; }
+
+        .summary-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 16px;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 18px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            border-left: 4px solid #2c7a7b;
+            text-align: center;
+        }
+
+        .card.major { border-left-color: #c53030; }
+        .card.moderate { border-left-color: #dd6b20; }
+        .card.minor { border-left-color: #d69e2e; }
+
+        .card h3 { font-size: 12px; color: #666; text-transform: uppercase; margin-bottom: 8px; }
+        .card .value { font-size: 28px; font-weight: 700; color: #222; }
+
+        .checker-section {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            margin-bottom: 30px;
+        }
+
+        .checker-section h2 {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 24px;
+            color: #234e52;
+        }
+
+        .drug-inputs {
+            display: grid;
+            grid-template-columns: 1fr auto 1fr;
+            gap: 20px;
+            align-items: end;
+            margin-bottom: 20px;
+        }
+
+        .input-group { position: relative; }
+        .input-group label {
+            display: block;
+            font-size: 13px;
+            font-weight: 600;
+            color: #555;
+            margin-bottom: 8px;
+        }
+
+        .input-group input {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .input-group input:focus { border-color: #2c7a7b; }
+
+        .vs-badge {
+            background: #2c7a7b;
+            color: white;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 13px;
+            margin-bottom: 2px;
+        }
+
+        .autocomplete-list {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            z-index: 100;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .autocomplete-item {
+            padding: 10px 16px;
+            cursor: pointer;
+            font-size: 13px;
+            border-bottom: 1px solid #f0f0f0;
+        }
+
+        .autocomplete-item:hover { background: #f7fafc; }
+        .autocomplete-item .drug-class { font-size: 11px; color: #888; }
+
+        .check-btn {
+            width: 100%;
+            padding: 14px;
+            background: #2c7a7b;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .check-btn:hover { background: #234e52; }
+
+        .result-section {
+            margin-top: 24px;
+            display: none;
+        }
+
+        .result-card {
+            border-radius: 12px;
+            padding: 24px;
+            margin-top: 16px;
+        }
+
+        .result-card.major {
+            background: #fff5f5;
+            border: 2px solid #fc8181;
+        }
+
+        .result-card.moderate {
+            background: #fffaf0;
+            border: 2px solid #f6ad55;
+        }
+
+        .result-card.minor {
+            background: #fffff0;
+            border: 2px solid #f6e05e;
+        }
+
+        .result-card.safe {
+            background: #f0fff4;
+            border: 2px solid #68d391;
+        }
+
+        .result-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .severity-badge {
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+
+        .severity-badge.Major { background: #fed7d7; color: #c53030; }
+        .severity-badge.Moderate { background: #feebc8; color: #c05621; }
+        .severity-badge.Minor { background: #fefcbf; color: #975a16; }
+        .severity-badge.Safe { background: #c6f6d5; color: #276749; }
+
+        .result-title { font-size: 18px; font-weight: 700; }
+        .result-title.major { color: #c53030; }
+        .result-title.moderate { color: #c05621; }
+        .result-title.minor { color: #975a16; }
+        .result-title.safe { color: #276749; }
+
+        .result-detail { margin-bottom: 16px; }
+        .result-detail h4 { font-size: 13px; font-weight: 600; color: #666; text-transform: uppercase; margin-bottom: 6px; }
+        .result-detail p { font-size: 14px; line-height: 1.6; }
+
+        .drug-info-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-top: 16px;
+        }
+
+        .drug-info-card {
+            background: white;
+            border-radius: 8px;
+            padding: 16px;
+            border: 1px solid #e2e8f0;
+        }
+
+        .drug-info-card h4 { font-size: 15px; font-weight: 700; color: #234e52; margin-bottom: 6px; }
+        .drug-info-card p { font-size: 12px; color: #666; margin-bottom: 4px; }
+        .drug-class-tag {
+            display: inline-block;
+            background: #e6fffa;
+            color: #234e52;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            margin-top: 6px;
+        }
+
+        .drug-list-section {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            margin-bottom: 30px;
+        }
+
+        .drug-list-section h2 {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: #234e52;
+        }
+
+        .drug-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 12px;
+        }
+
+        .drug-chip {
+            background: #e6fffa;
+            border: 1px solid #81e6d9;
+            border-radius: 8px;
+            padding: 10px 14px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .drug-chip:hover { background: #b2f5ea; }
+        .drug-chip .drug-name { font-size: 13px; font-weight: 600; color: #234e52; }
+        .drug-chip .drug-class { font-size: 11px; color: #666; margin-top: 2px; }
+
+        .warning-box {
+            background: #fffbeb;
+            border: 1px solid #f6e05e;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 24px;
+            font-size: 13px;
+            color: #744210;
+        }
+
+        .warning-box strong { display: block; margin-bottom: 4px; }
+
+        footer {
+            text-align: center;
+            padding: 20px;
+            color: #888;
+            font-size: 13px;
+            border-top: 1px solid #eee;
+            margin-top: 20px;
+        }
+
+        @media (max-width: 600px) {
+            .drug-inputs { grid-template-columns: 1fr; }
+            .vs-badge { display: none; }
+            .drug-info-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <div>
+        <h1>Drug Interaction Checker</h1>
+        <p>Clinical decision support tool for healthcare professionals in Africa</p>
+    </div>
+</header>
+
+<div class="container">
+
+    <div class="summary-cards" id="summary-cards">
+        <div>Loading...</div>
+    </div>
+
+    <div class="warning-box">
+        <strong>Clinical Disclaimer</strong>
+        This tool is intended to support clinical decision making and does not replace professional medical judgment. Always consult a qualified pharmacist or physician before making prescribing decisions. This database may not include all known drug interactions.
+    </div>
+
+    <div class="checker-section">
+        <h2>Check Drug Interaction</h2>
+
+        <div class="drug-inputs">
+            <div class="input-group">
+                <label>First Drug</label>
+                <input type="text" id="drug1-input" placeholder="e.g. Warfarin" oninput="searchDrugs(this, 'drug1-list', 'drug1-selected')" autocomplete="off">
+                <input type="hidden" id="drug1-selected">
+                <div class="autocomplete-list" id="drug1-list" style="display:none;"></div>
+            </div>
+
+            <div style="display:flex; justify-content:center;">
+                <div class="vs-badge">VS</div>
+            </div>
+
+            <div class="input-group">
+                <label>Second Drug</label>
+                <input type="text" id="drug2-input" placeholder="e.g. Aspirin" oninput="searchDrugs(this, 'drug2-list', 'drug2-selected')" autocomplete="off">
+                <input type="hidden" id="drug2-selected">
+                <div class="autocomplete-list" id="drug2-list" style="display:none;"></div>
+            </div>
+        </div>
+
+        <button class="check-btn" onclick="checkInteraction()">Check Interaction</button>
+
+        <div class="result-section" id="result-section"></div>
+    </div>
+
+    <div class="drug-list-section">
+        <h2>Drug Database - Click any drug to see all its interactions</h2>
+        <div class="drug-grid" id="drug-grid">
+            <div>Loading drugs...</div>
+        </div>
+    </div>
+
+</div>
+
+<footer>
+    <p>Drug Interaction Checker | Built by Emmanuel Owusu Adu | Health Informatics Research</p>
+    <p>For clinical use only. Always verify with current pharmaceutical references.</p>
+</footer>
+
+<script>
+    async function loadSummary() {
+        const response = await fetch('/api/summary');
+        const data = await response.json();
+
+        document.getElementById('summary-cards').innerHTML = `
+            <div class="card">
+                <h3>Drugs in Database</h3>
+                <div class="value">${data.total_drugs}</div>
+            </div>
+            <div class="card">
+                <h3>Known Interactions</h3>
+                <div class="value">${data.total_interactions}</div>
+            </div>
+            <div class="card major">
+                <h3>Major Interactions</h3>
+                <div class="value">${data.major}</div>
+            </div>
+            <div class="card moderate">
+                <h3>Moderate Interactions</h3>
+                <div class="value">${data.moderate}</div>
+            </div>
+            <div class="card minor">
+                <h3>Minor Interactions</h3>
+                <div class="value">${data.minor}</div>
+            </div>
+        `;
+    }
+
+    async function loadDrugGrid() {
+        const response = await fetch('/api/drugs');
+        const drugs = await response.json();
+
+        document.getElementById('drug-grid').innerHTML = drugs.map(drug => `
+            <div class="drug-chip" onclick="showDrugInteractions(${drug.id}, '${drug.name}')">
+                <div class="drug-name">${drug.name}</div>
+                <div class="drug-class">${drug.drug_class}</div>
+            </div>
+        `).join('');
+    }
+
+    async function searchDrugs(input, listId, hiddenId) {
+        const query = input.value;
+        if (query.length < 2) {
+            document.getElementById(listId).style.display = 'none';
+            return;
+        }
+
+        const response = await fetch(`/api/search-drugs?q=${query}`);
+        const drugs = await response.json();
+
+        const list = document.getElementById(listId);
+        if (drugs.length === 0) {
+            list.style.display = 'none';
+            return;
+        }
+
+        list.innerHTML = drugs.map(drug => `
+            <div class="autocomplete-item" onclick="selectDrug('${drug.name}', '${input.id}', '${listId}', '${hiddenId}')">
+                ${drug.name}
+                <div class="drug-class">${drug.drug_class}</div>
+            </div>
+        `).join('');
+
+        list.style.display = 'block';
+    }
+
+    function selectDrug(name, inputId, listId, hiddenId) {
+        document.getElementById(inputId).value = name;
+        document.getElementById(hiddenId).value = name;
+        document.getElementById(listId).style.display = 'none';
+    }
+
+    async function checkInteraction() {
+        const drug1 = document.getElementById('drug1-input').value;
+        const drug2 = document.getElementById('drug2-input').value;
+
+        if (!drug1 || !drug2) {
+            alert('Please enter both drug names');
+            return;
+        }
+
+        const response = await fetch(`/api/check-interaction?drug1=${encodeURIComponent(drug1)}&drug2=${encodeURIComponent(drug2)}`);
+        const data = await response.json();
+
+        const resultSection = document.getElementById('result-section');
+        resultSection.style.display = 'block';
+
+        if (data.error) {
+            resultSection.innerHTML = `
+                <div class="result-card" style="background:#fff5f5; border:2px solid #fc8181;">
+                    <p style="color:#c53030; font-weight:600;">Error: ${data.error}</p>
+                </div>
+            `;
+            return;
+        }
+
+        if (data.found) {
+            const interaction = data.interaction;
+            const severityClass = interaction.severity.toLowerCase();
+
+            resultSection.innerHTML = `
+                <div class="result-card ${severityClass}">
+                    <div class="result-header">
+                        <span class="severity-badge ${interaction.severity}">${interaction.severity} Interaction</span>
+                        <span class="result-title ${severityClass}">${data.drug1.name} + ${data.drug2.name}</span>
+                    </div>
+
+                    <div class="result-detail">
+                        <h4>Interaction Description</h4>
+                        <p>${interaction.description}</p>
+                    </div>
+
+                    <div class="result-detail">
+                        <h4>Clinical Effects</h4>
+                        <p>${interaction.clinical_effects}</p>
+                    </div>
+
+                    <div class="result-detail">
+                        <h4>Clinical Management</h4>
+                        <p>${interaction.management}</p>
+                    </div>
+
+                    <div class="drug-info-grid">
+                        <div class="drug-info-card">
+                            <h4>${data.drug1.name}</h4>
+                            <p>${data.drug1.generic_name}</p>
+                            <p>${data.drug1.description}</p>
+                            <span class="drug-class-tag">${data.drug1.drug_class}</span>
+                        </div>
+                        <div class="drug-info-card">
+                            <h4>${data.drug2.name}</h4>
+                            <p>${data.drug2.generic_name}</p>
+                            <p>${data.drug2.description}</p>
+                            <span class="drug-class-tag">${data.drug2.drug_class}</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        } else {
+            resultSection.innerHTML = `
+                <div class="result-card safe">
+                    <div class="result-header">
+                        <span class="severity-badge Safe">No Known Interaction</span>
+                        <span class="result-title safe">${data.drug1.name} + ${data.drug2.name}</span>
+                    </div>
+                    <p>${data.message}</p>
+
+                    <div class="drug-info-grid" style="margin-top:16px;">
+                        <div class="drug-info-card">
+                            <h4>${data.drug1.name}</h4>
+                            <p>${data.drug1.generic_name}</p>
+                            <p>${data.drug1.description}</p>
+                            <span class="drug-class-tag">${data.drug1.drug_class}</span>
+                        </div>
+                        <div class="drug-info-card">
+                            <h4>${data.drug2.name}</h4>
+                            <p>${data.drug2.generic_name}</p>
+                            <p>${data.drug2.description}</p>
+                            <span class="drug-class-tag">${data.drug2.drug_class}</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        resultSection.scrollIntoView({ behavior: 'smooth' });
+    }
+
+    async function showDrugInteractions(drugId, drugName) {
+        const response = await fetch(`/api/drug-interactions/${drugId}`);
+        const data = await response.json();
+
+        const resultSection = document.getElementById('result-section');
+        resultSection.style.display = 'block';
+
+        if (data.interactions.length === 0) {
+            resultSection.innerHTML = `
+                <div class="result-card safe">
+                    <h3 style="color:#276749; margin-bottom:8px;">No known interactions for ${drugName}</h3>
+                    <p>No drug interactions are currently recorded for this medication in our database.</p>
+                </div>
+            `;
+        } else {
+            const interactionHTML = data.interactions.map(item => `
+                <div style="padding:16px; border-bottom:1px solid #eee;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                        <strong style="font-size:15px;">${drugName} + ${item.interacts_with}</strong>
+                        <span class="severity-badge ${item.severity}">${item.severity}</span>
+                    </div>
+                    <p style="font-size:13px; color:#555; margin-bottom:6px;">${item.description}</p>
+                    <p style="font-size:12px; color:#888;"><strong>Management:</strong> ${item.management}</p>
+                </div>
+            `).join('');
+
+            resultSection.innerHTML = `
+                <div class="result-card" style="background:white; border:2px solid #e2e8f0;">
+                    <h3 style="margin-bottom:4px; color:#234e52;">${drugName} - All Known Interactions</h3>
+                    <p style="font-size:13px; color:#666; margin-bottom:16px;">${data.total} interaction(s) found</p>
+                    ${interactionHTML}
+                </div>
+            `;
+        }
+
+        resultSection.scrollIntoView({ behavior: 'smooth' });
+    }
+
+    document.addEventListener('click', function(e) {
+        if (!e.target.closest('.input-group')) {
+            document.querySelectorAll('.autocomplete-list').forEach(list => {
+                list.style.display = 'none';
+            });
+        }
+    });
+
+    loadSummary();
+    loadDrugGrid();
+</script>
+
+</body>
+</html>
