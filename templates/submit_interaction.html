@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Submit a Drug Interaction - Drug Interaction Checker</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f0f4f8; color: #333; }
+
+        header {
+            background: linear-gradient(135deg, #234e52, #2c7a7b);
+            color: white;
+            padding: 24px 30px;
+        }
+        header h1 { font-size: 22px; font-weight: 700; }
+        header p { font-size: 13px; opacity: 0.9; margin-top: 4px; }
+
+        .container { max-width: 700px; margin: 0 auto; padding: 30px 20px; }
+
+        .form-card {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        }
+
+        .form-card h2 { font-size: 18px; margin-bottom: 8px; color: #234e52; }
+        .form-card .subtitle { font-size: 13px; color: #666; margin-bottom: 24px; }
+
+        .form-section { margin-bottom: 24px; }
+        .form-section h3 {
+            font-size: 13px;
+            text-transform: uppercase;
+            color: #2c7a7b;
+            margin-bottom: 12px;
+            padding-bottom: 6px;
+            border-bottom: 2px solid #e6fffa;
+        }
+
+        .form-group { margin-bottom: 16px; }
+        .form-group label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: #444; }
+        .form-group input, .form-group select, .form-group textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 14px;
+            outline: none;
+            font-family: inherit;
+        }
+        .form-group input:focus, .form-group select:focus, .form-group textarea:focus { border-color: #2c7a7b; }
+        .form-group textarea { resize: vertical; min-height: 80px; }
+
+        .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+        .submit-btn {
+            width: 100%;
+            padding: 14px;
+            background: #2c7a7b;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .submit-btn:hover { background: #234e52; }
+        .submit-btn:disabled { background: #a0aec0; cursor: not-allowed; }
+
+        .message-box {
+            display: none;
+            padding: 14px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+        .message-box.success { background: #c6f6d5; color: #276749; border: 1px solid #68d391; }
+        .message-box.error { background: #fed7d7; color: #c53030; border: 1px solid #fc8181; }
+
+        .privacy-note { font-size: 12px; color: #888; margin-top: 16px; line-height: 1.5; }
+        .back-link { display: inline-block; margin-bottom: 16px; color: #2c7a7b; font-size: 13px; text-decoration: none; font-weight: 600; }
+        .back-link:hover { text-decoration: underline; }
+
+        footer { text-align: center; padding: 20px; color: #888; font-size: 12px; }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>Submit a Drug Interaction</h1>
+    <p>Help expand our community-verified drug interaction database</p>
+</header>
+
+<div class="container">
+    <div class="form-card">
+        <a href="/" class="back-link">&larr; Back to Interaction Checker</a>
+        <h2>Report a Known Interaction</h2>
+        <p class="subtitle">If you are aware of a drug interaction not currently in our database, please share it here. Your submission becomes visible in the checker immediately.</p>
+
+        <div class="message-box" id="message-box"></div>
+
+        <form id="interaction-form">
+            <div class="form-section">
+                <h3>Your Details</h3>
+                <div class="row-2">
+                    <div class="form-group">
+                        <label>Full Name *</label>
+                        <input type="text" id="name" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Email Address *</label>
+                        <input type="email" id="email" required>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Profession / Role</label>
+                    <select id="profession">
+                        <option value="">Select if applicable</option>
+                        <option>Pharmacist</option>
+                        <option>Physician</option>
+                        <option>Nurse</option>
+                        <option>Pharmacy Technician</option>
+                        <option>Medical Student</option>
+                        <option>Researcher</option>
+                        <option>Other Healthcare Professional</option>
+                        <option>Other</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="form-section">
+                <h3>Interaction Details</h3>
+                <div class="row-2">
+                    <div class="form-group">
+                        <label>First Drug *</label>
+                        <input type="text" id="drug1_name" placeholder="e.g. Warfarin" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Second Drug *</label>
+                        <input type="text" id="drug2_name" placeholder="e.g. Aspirin" required>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Severity *</label>
+                    <select id="severity" required>
+                        <option value="">Select severity</option>
+                        <option value="Major">Major - avoid combination, serious risk</option>
+                        <option value="Moderate">Moderate - use with caution, monitor closely</option>
+                        <option value="Minor">Minor - generally safe, be aware</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Interaction Description *</label>
+                    <textarea id="description" placeholder="Briefly describe the mechanism of interaction" required></textarea>
+                </div>
+                <div class="form-group">
+                    <label>Clinical Effects</label>
+                    <textarea id="clinical_effects" placeholder="What happens clinically when these drugs are combined"></textarea>
+                </div>
+                <div class="form-group">
+                    <label>Recommended Management</label>
+                    <textarea id="management" placeholder="How should clinicians manage this interaction"></textarea>
+                </div>
+            </div>
+
+            <button type="submit" class="submit-btn" id="submit-btn">Submit Interaction</button>
+
+            <p class="privacy-note">
+                Your name, email, and profession are collected to add credibility context to your submission.
+                Submitted interactions appear immediately in the public interaction checker and are not independently verified before publishing.
+            </p>
+        </form>
+    </div>
+</div>
+
+<footer>
+    Drug Interaction Checker | Community Submissions Module | Built by Emmanuel Owusu Adu
+</footer>
+
+<script>
+    document.getElementById("interaction-form").addEventListener("submit", async function(e) {
+        e.preventDefault();
+
+        const btn = document.getElementById("submit-btn");
+        const msgBox = document.getElementById("message-box");
+        btn.disabled = true;
+        btn.textContent = "Submitting...";
+
+        const payload = {
+            name: document.getElementById("name").value,
+            email: document.getElementById("email").value,
+            profession: document.getElementById("profession").value,
+            drug1_name: document.getElementById("drug1_name").value,
+            drug2_name: document.getElementById("drug2_name").value,
+            severity: document.getElementById("severity").value,
+            description: document.getElementById("description").value,
+            clinical_effects: document.getElementById("clinical_effects").value,
+            management: document.getElementById("management").value
+        };
+
+        try {
+            const response = await fetch("/api/submit-interaction", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            });
+
+            const data = await response.json();
+
+            msgBox.style.display = "block";
+            if (response.ok) {
+                msgBox.className = "message-box success";
+                msgBox.textContent = data.message;
+                document.getElementById("interaction-form").reset();
+            } else {
+                msgBox.className = "message-box error";
+                msgBox.textContent = data.error;
+            }
+        } catch (err) {
+            msgBox.style.display = "block";
+            msgBox.className = "message-box error";
+            msgBox.textContent = "Something went wrong. Please try again.";
+        }
+
+        btn.disabled = false;
+        btn.textContent = "Submit Interaction";
+        window.scrollTo({ top: 0, behavior: "smooth" });
+    });
+</script>
+
+</body>
+</html>

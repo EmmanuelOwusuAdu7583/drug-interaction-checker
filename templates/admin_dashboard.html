@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Dashboard - Submitted Interactions</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f0f4f8; color: #333; }
+
+        header {
+            background: linear-gradient(135deg, #234e52, #2c7a7b);
+            color: white;
+            padding: 20px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        header h1 { font-size: 20px; font-weight: 700; }
+        .logout-link { color: white; font-size: 13px; text-decoration: none; background: rgba(255,255,255,0.15); padding: 8px 14px; border-radius: 6px; }
+        .logout-link:hover { background: rgba(255,255,255,0.25); }
+
+        .container { max-width: 1300px; margin: 0 auto; padding: 30px 20px; }
+
+        .summary-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
+        .card { background: white; border-radius: 12px; padding: 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); border-left: 4px solid #2c7a7b; }
+        .card h3 { font-size: 12px; color: #666; text-transform: uppercase; margin-bottom: 8px; }
+        .card .value { font-size: 26px; font-weight: 700; }
+
+        .charts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px; margin-bottom: 24px; }
+        .chart-card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+        .chart-card h2 { font-size: 15px; margin-bottom: 16px; }
+        .chart-container { position: relative; height: 250px; }
+
+        .table-section { background: white; border-radius: 12px; padding: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 30px; }
+        .table-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+        .table-header h2 { font-size: 16px; }
+
+        .export-btn {
+            background: #2f855a;
+            color: white;
+            padding: 10px 18px;
+            border-radius: 6px;
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 600;
+        }
+        .export-btn:hover { background: #276749; }
+
+        table { width: 100%; border-collapse: collapse; }
+        th { background: #f7fafc; padding: 10px; text-align: left; font-size: 11px; color: #666; text-transform: uppercase; border-bottom: 2px solid #eee; }
+        td { padding: 10px; font-size: 13px; border-bottom: 1px solid #f0f0f0; vertical-align: top; }
+        tr:hover { background: #f7fafc; }
+        .notes-cell { max-width: 220px; font-size: 12px; color: #555; }
+
+        .severity-badge { padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; }
+        .severity-badge.Major { background: #fed7d7; color: #c53030; }
+        .severity-badge.Moderate { background: #feebc8; color: #c05621; }
+        .severity-badge.Minor { background: #fefcbf; color: #975a16; }
+
+        .loading { text-align: center; padding: 30px; color: #888; }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>Submitted Drug Interactions - Admin</h1>
+    <a href="/admin/logout" class="logout-link">Log Out</a>
+</header>
+
+<div class="container">
+
+    <div class="summary-cards" id="summary-cards">
+        <div class="loading">Loading...</div>
+    </div>
+
+    <div class="charts-grid">
+        <div class="chart-card">
+            <h2>Submissions by Severity</h2>
+            <div class="chart-container"><canvas id="severityChart"></canvas></div>
+        </div>
+        <div class="chart-card">
+            <h2>Submitters by Profession</h2>
+            <div class="chart-container"><canvas id="professionChart"></canvas></div>
+        </div>
+    </div>
+
+    <div class="table-section">
+        <div class="table-header">
+            <h2>All Submitted Interactions</h2>
+            <a href="/api/admin/export-csv" class="export-btn">Export CSV</a>
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Date</th><th>Drug 1</th><th>Drug 2</th><th>Severity</th>
+                    <th>Submitter</th><th>Profession</th><th>Description</th>
+                </tr>
+            </thead>
+            <tbody id="submissions-body">
+                <tr><td colspan="7" class="loading">Loading submissions...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+</div>
+
+<script>
+    const colors = ['#2c7a7b', '#c53030', '#d69e2e', '#805ad5', '#2f855a', '#dd6b20'];
+
+    async function loadSummary() {
+        const res = await fetch('/api/admin/summary');
+        const d = await res.json();
+
+        document.getElementById('summary-cards').innerHTML = `
+            <div class="card"><h3>Total Submitted</h3><div class="value">${d.total_submitted}</div></div>
+            <div class="card"><h3>Unique Submitters</h3><div class="value">${d.total_submitters}</div></div>
+        `;
+
+        new Chart(document.getElementById('severityChart'), {
+            type: 'doughnut',
+            data: {
+                labels: d.by_severity.map(s => s.severity),
+                datasets: [{ data: d.by_severity.map(s => s.count), backgroundColor: ['#c53030', '#dd6b20', '#d69e2e'], borderWidth: 2, borderColor: '#fff' }]
+            },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } }
+        });
+
+        new Chart(document.getElementById('professionChart'), {
+            type: 'bar',
+            data: {
+                labels: d.by_profession.map(p => p.profession),
+                datasets: [{ label: 'Submitters', data: d.by_profession.map(p => p.count), backgroundColor: colors, borderRadius: 6 }]
+            },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+        });
+    }
+
+    async function loadSubmissions() {
+        const res = await fetch('/api/admin/submitted-interactions');
+        const d = await res.json();
+
+        document.getElementById('submissions-body').innerHTML = d.map(s => `
+            <tr>
+                <td>${s.submitted_at.split(' ')[0]}</td>
+                <td>${s.drug1_name}</td>
+                <td>${s.drug2_name}</td>
+                <td><span class="severity-badge ${s.severity}">${s.severity}</span></td>
+                <td>${s.submitter_name}<br><span style="color:#888;font-size:11px;">${s.submitter_email}</span></td>
+                <td>${s.profession || '-'}</td>
+                <td class="notes-cell">${s.description}</td>
+            </tr>
+        `).join('') || '<tr><td colspan="7">No submissions yet.</td></tr>';
+    }
+
+    loadSummary();
+    loadSubmissions();
+</script>
+
+</body>
+</html>
