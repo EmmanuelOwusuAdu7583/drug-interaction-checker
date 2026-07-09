@@ -662,7 +662,16 @@ def export_csv():
     }
 
 
-create_database()
+_db_initialized = False
+
+
+@app.before_request
+def initialize_database_once():
+    global _db_initialized
+    if not _db_initialized:
+        create_database()
+        _db_initialized = True
+
 
 if __name__ == "__main__":
     print("Drug Interaction Checker starting...")
