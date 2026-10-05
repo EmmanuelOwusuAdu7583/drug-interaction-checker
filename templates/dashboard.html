@@ -351,6 +351,18 @@
         .source-tag { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px; }
         .source-tag.verified { background: #e6fffa; color: #234e52; }
         .source-tag.community { background: #edf2f7; color: #4a5568; }
+        .source-tag.ddinter { background: #ebf8ff; color: #2c5282; }
+        .drug-grid-filter {
+            width: 100%;
+            padding: 10px 12px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 14px;
+            outline: none;
+            margin-bottom: 8px;
+        }
+        .drug-grid-filter:focus { border-color: #2c7a7b; }
+        .drug-grid-count { font-size: 12px; color: #666; margin-bottom: 12px; }
         .medlist-note { font-size: 12px; color: #744210; background: #fffbeb; border: 1px solid #f6e05e; border-radius: 8px; padding: 12px; margin-top: 14px; line-height: 1.5; }
 
         @media (max-width: 600px) {
@@ -430,6 +442,8 @@
 
     <div class="drug-list-section">
         <h2>Drug Database - Click any drug to see all its interactions</h2>
+        <input type="text" id="drug-grid-filter" class="drug-grid-filter" placeholder="Search the drug list by name or class" oninput="renderDrugGrid()" autocomplete="off">
+        <p class="drug-grid-count" id="drug-grid-count"></p>
         <div class="drug-grid" id="drug-grid">
             <div>Loading drugs...</div>
         </div>
@@ -440,6 +454,7 @@
 <footer>
     <p>Drug Interaction Checker | Built by Emmanuel Owusu Adu | Health Informatics Research</p>
     <p>For clinical use only. Always verify with current pharmaceutical references.</p>
+    <p>Includes interaction severity data from <a href="https://ddinter.scbdd.com" target="_blank" rel="noopener" style="color:inherit;">DDInter</a> (Xiong et al., Nucleic Acids Research, 2022), used for non-commercial purposes under CC BY-NC-SA 4.0.</p>
 </footer>
 
 <script>
@@ -471,16 +486,45 @@
         `;
     }
 
+    // The drug list is too long to show in full, so the grid shows the first
+    // matches for whatever is typed in the search box above it.
+    const DRUG_GRID_LIMIT = 60;
+    const DRUG_DETAIL_LIMIT = 100;
+    let allDrugs = [];
+
     async function loadDrugGrid() {
         const response = await fetch('/api/drugs');
-        const drugs = await response.json();
+        allDrugs = await response.json();
+        renderDrugGrid();
+    }
 
-        document.getElementById('drug-grid').innerHTML = drugs.map(drug => `
-            <div class="drug-chip" onclick="showDrugInteractions(${drug.id}, '${drug.name}')">
-                <div class="drug-name">${drug.name}</div>
-                <div class="drug-class">${drug.drug_class}</div>
-            </div>
-        `).join('');
+    function renderDrugGrid() {
+        const query = document.getElementById('drug-grid-filter').value.trim().toLowerCase();
+        const matches = query
+            ? allDrugs.filter(drug => drug.name.toLowerCase().includes(query) || String(drug.drug_class || '').toLowerCase().includes(query))
+            : allDrugs;
+        const shown = matches.slice(0, DRUG_GRID_LIMIT);
+
+        const grid = document.getElementById('drug-grid');
+        grid.innerHTML = '';
+        shown.forEach(drug => {
+            const chip = document.createElement('div');
+            chip.className = 'drug-chip';
+            chip.innerHTML = `
+                <div class="drug-name">${escapeHtml(drug.name)}</div>
+                <div class="drug-class">${escapeHtml(drug.drug_class)}</div>`;
+            chip.addEventListener('click', () => showDrugInteractions(drug.id, drug.name));
+            grid.appendChild(chip);
+        });
+
+        const count = document.getElementById('drug-grid-count');
+        if (!matches.length) {
+            count.textContent = 'No drugs match that search.';
+        } else if (matches.length > shown.length) {
+            count.textContent = `Showing ${shown.length} of ${matches.length} drugs. Type in the box above to narrow the list.`;
+        } else {
+            count.textContent = `Showing ${matches.length} drug${matches.length === 1 ? '' : 's'}.`;
+        }
     }
 
     async function searchDrugs(input, listId, hiddenId) {
@@ -490,7 +534,7 @@
             return;
         }
 
-        const response = await fetch(`/api/search-drugs?q=${query}`);
+        const response = await fetch(`/api/search-drugs?q=${encodeURIComponent(query)}`);
         const drugs = await response.json();
 
         const list = document.getElementById(listId);
@@ -499,14 +543,22 @@
             return;
         }
 
-        list.innerHTML = drugs.map(drug => `
-            <div class="autocomplete-item" onclick="selectDrug('${drug.name}', '${input.id}', '${listId}', '${hiddenId}')">
-                ${drug.name}
-                <div class="drug-class">${drug.drug_class}</div>
-            </div>
-        `).join('');
+        list.innerHTML = '';
+        drugs.forEach(drug => {
+            const item = document.createElement('div');
+            item.className = 'autocomplete-item';
+            item.innerHTML = `${escapeHtml(drug.name)}<div class="drug-class">${escapeHtml(drug.drug_class)}</div>`;
+            item.addEventListener('click', () => selectDrug(drug.name, input.id, listId, hiddenId));
+            list.appendChild(item);
+        });
 
         list.style.display = 'block';
+    }
+
+    function sourceNote(source) {
+        return source === 'ddinter'
+            ? '<span class="source-tag ddinter">DDInter database, severity only</span>'
+            : '';
     }
 
     function selectDrug(name, inputId, listId, hiddenId) {
@@ -533,7 +585,7 @@
         if (data.error) {
             resultSection.innerHTML = `
                 <div class="result-card" style="background:#fff5f5; border:2px solid #fc8181;">
-                    <p style="color:#c53030; font-weight:600;">Error: ${data.error}</p>
+                    <p style="color:#c53030; font-weight:600;">Error: ${escapeHtml(data.error)}</p>
                 </div>
             `;
             return;
@@ -546,37 +598,38 @@
             resultSection.innerHTML = `
                 <div class="result-card ${severityClass}">
                     <div class="result-header">
-                        <span class="severity-badge ${interaction.severity}">${interaction.severity} Interaction</span>
-                        <span class="result-title ${severityClass}">${data.drug1.name} + ${data.drug2.name}</span>
+                        <span class="severity-badge ${escapeHtml(interaction.severity)}">${escapeHtml(interaction.severity)} Interaction</span>
+                        <span class="result-title ${escapeHtml(severityClass)}">${escapeHtml(data.drug1.name)} + ${escapeHtml(data.drug2.name)}</span>
+                        ${sourceNote(data.source)}
                     </div>
 
                     <div class="result-detail">
                         <h4>Interaction Description</h4>
-                        <p>${interaction.description}</p>
+                        <p>${escapeHtml(interaction.description)}</p>
                     </div>
 
-                    <div class="result-detail">
+                    ${interaction.clinical_effects ? `<div class="result-detail">
                         <h4>Clinical Effects</h4>
-                        <p>${interaction.clinical_effects}</p>
-                    </div>
+                        <p>${escapeHtml(interaction.clinical_effects)}</p>
+                    </div>` : ''}
 
-                    <div class="result-detail">
+                    ${interaction.management ? `<div class="result-detail">
                         <h4>Clinical Management</h4>
-                        <p>${interaction.management}</p>
-                    </div>
+                        <p>${escapeHtml(interaction.management)}</p>
+                    </div>` : ''}
 
                     <div class="drug-info-grid">
                         <div class="drug-info-card">
-                            <h4>${data.drug1.name}</h4>
-                            <p>${data.drug1.generic_name}</p>
-                            <p>${data.drug1.description}</p>
-                            <span class="drug-class-tag">${data.drug1.drug_class}</span>
+                            <h4>${escapeHtml(data.drug1.name)}</h4>
+                            <p>${escapeHtml(data.drug1.generic_name)}</p>
+                            <p>${escapeHtml(data.drug1.description)}</p>
+                            <span class="drug-class-tag">${escapeHtml(data.drug1.drug_class)}</span>
                         </div>
                         <div class="drug-info-card">
-                            <h4>${data.drug2.name}</h4>
-                            <p>${data.drug2.generic_name}</p>
-                            <p>${data.drug2.description}</p>
-                            <span class="drug-class-tag">${data.drug2.drug_class}</span>
+                            <h4>${escapeHtml(data.drug2.name)}</h4>
+                            <p>${escapeHtml(data.drug2.generic_name)}</p>
+                            <p>${escapeHtml(data.drug2.description)}</p>
+                            <span class="drug-class-tag">${escapeHtml(data.drug2.drug_class)}</span>
                         </div>
                     </div>
                 </div>
@@ -586,22 +639,22 @@
                 <div class="result-card safe">
                     <div class="result-header">
                         <span class="severity-badge Safe">No Known Interaction</span>
-                        <span class="result-title safe">${data.drug1.name} + ${data.drug2.name}</span>
+                        <span class="result-title safe">${escapeHtml(data.drug1.name)} + ${escapeHtml(data.drug2.name)}</span>
                     </div>
-                    <p>${data.message}</p>
+                    <p>${escapeHtml(data.message)}</p>
 
                     <div class="drug-info-grid" style="margin-top:16px;">
                         <div class="drug-info-card">
-                            <h4>${data.drug1.name}</h4>
-                            <p>${data.drug1.generic_name}</p>
-                            <p>${data.drug1.description}</p>
-                            <span class="drug-class-tag">${data.drug1.drug_class}</span>
+                            <h4>${escapeHtml(data.drug1.name)}</h4>
+                            <p>${escapeHtml(data.drug1.generic_name)}</p>
+                            <p>${escapeHtml(data.drug1.description)}</p>
+                            <span class="drug-class-tag">${escapeHtml(data.drug1.drug_class)}</span>
                         </div>
                         <div class="drug-info-card">
-                            <h4>${data.drug2.name}</h4>
-                            <p>${data.drug2.generic_name}</p>
-                            <p>${data.drug2.description}</p>
-                            <span class="drug-class-tag">${data.drug2.drug_class}</span>
+                            <h4>${escapeHtml(data.drug2.name)}</h4>
+                            <p>${escapeHtml(data.drug2.generic_name)}</p>
+                            <p>${escapeHtml(data.drug2.description)}</p>
+                            <span class="drug-class-tag">${escapeHtml(data.drug2.drug_class)}</span>
                         </div>
                     </div>
                 </div>
@@ -621,26 +674,30 @@
         if (data.interactions.length === 0) {
             resultSection.innerHTML = `
                 <div class="result-card safe">
-                    <h3 style="color:#276749; margin-bottom:8px;">No known interactions for ${drugName}</h3>
+                    <h3 style="color:#276749; margin-bottom:8px;">No known interactions for ${escapeHtml(drugName)}</h3>
                     <p>No drug interactions are currently recorded for this medication in our database.</p>
                 </div>
             `;
         } else {
-            const interactionHTML = data.interactions.map(item => `
+            // Some drugs have hundreds of entries; show the most important first
+            // (hand-written entries, then by severity) and say how many are left out.
+            const shown = data.interactions.slice(0, DRUG_DETAIL_LIMIT);
+            const interactionHTML = shown.map(item => `
                 <div style="padding:16px; border-bottom:1px solid #eee;">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                        <strong style="font-size:15px;">${drugName} + ${item.interacts_with}</strong>
-                        <span class="severity-badge ${item.severity}">${item.severity}</span>
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:8px;">
+                        <strong style="font-size:15px;">${escapeHtml(drugName)} + ${escapeHtml(item.interacts_with)}</strong>
+                        <span><span class="severity-badge ${escapeHtml(item.severity)}">${escapeHtml(item.severity)}</span> ${sourceNote(item.source)}</span>
                     </div>
-                    <p style="font-size:13px; color:#555; margin-bottom:6px;">${item.description}</p>
-                    <p style="font-size:12px; color:#888;"><strong>Management:</strong> ${item.management}</p>
+                    ${item.source === 'ddinter' ? '' : `<p style="font-size:13px; color:#555; margin-bottom:6px;">${escapeHtml(item.description)}</p>`}
+                    ${item.management ? `<p style="font-size:12px; color:#888;"><strong>Management:</strong> ${escapeHtml(item.management)}</p>` : ''}
                 </div>
             `).join('');
+            const hidden = data.total - shown.length;
 
             resultSection.innerHTML = `
                 <div class="result-card" style="background:white; border:2px solid #e2e8f0;">
-                    <h3 style="margin-bottom:4px; color:#234e52;">${drugName} - All Known Interactions</h3>
-                    <p style="font-size:13px; color:#666; margin-bottom:16px;">${data.total} interaction(s) found</p>
+                    <h3 style="margin-bottom:4px; color:#234e52;">${escapeHtml(drugName)} - All Known Interactions</h3>
+                    <p style="font-size:13px; color:#666; margin-bottom:16px;">${data.total} interaction(s) found${hidden > 0 ? `, showing the ${shown.length} most severe. Use the checkers above to look up a specific combination.` : ''}</p>
                     ${interactionHTML}
                 </div>
             `;
@@ -749,6 +806,8 @@
                 const cls = sev.toLowerCase();
                 const sourceTag = f.source === 'verified'
                     ? '<span class="source-tag verified">Verified database</span>'
+                    : f.source === 'ddinter'
+                    ? sourceNote('ddinter')
                     : `<span class="source-tag community">Community submitted, not independently verified${f.submitted_by ? ' (' + escapeHtml(f.submitted_by) + (f.submitter_profession ? ', ' + escapeHtml(f.submitter_profession) : '') + ')' : ''}</span>`;
                 html += `
                     <div class="flag-item ${escapeHtml(cls)}">
@@ -756,7 +815,7 @@
                             <strong>${escapeHtml(f.drug1)} + ${escapeHtml(f.drug2)}</strong>
                             <span><span class="severity-badge ${escapeHtml(sev)}">${escapeHtml(sev)}</span> ${sourceTag}</span>
                         </div>
-                        <p>${escapeHtml(f.description)}</p>
+                        ${f.source === 'ddinter' ? '' : `<p>${escapeHtml(f.description)}</p>`}
                         ${f.clinical_effects ? `<p><strong>Clinical effects:</strong> ${escapeHtml(f.clinical_effects)}</p>` : ''}
                         ${f.management ? `<p><strong>Management:</strong> ${escapeHtml(f.management)}</p>` : ''}
                     </div>`;
@@ -767,6 +826,10 @@
 
         if (data.unrecognized.length) {
             html += `<div class="medlist-note"><strong>Not in the database, so not fully checked:</strong> ${data.unrecognized.map(escapeHtml).join(', ')}. Interactions involving these medications may exist and would not be flagged.</div>`;
+        }
+
+        if (data.flags.some(f => f.source === 'ddinter')) {
+            html += `<div class="medlist-note"><strong>About "DDInter database, severity only" flags:</strong> these come from the DDInter research database, which publishes the severity of each interaction but not the mechanism or management. Check a pharmacist or current prescribing reference for what to do.</div>`;
         }
 
         html += `<div class="medlist-note">The database holds a limited set of interactions. The absence of a flag is not evidence that a combination is safe. Always confirm with a pharmacist or current prescribing references.</div>`;

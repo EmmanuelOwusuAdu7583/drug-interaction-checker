@@ -5,6 +5,6 @@
     "buildCommand": "python -m compileall -q app.py"
   },
   "deploy": {
-    "startCommand": "gunicorn --bind 0.0.0.0:$PORT app:app"
+    "startCommand": "gunicorn --bind 0.0.0.0:$PORT --timeout 180 app:app"
   }
 }

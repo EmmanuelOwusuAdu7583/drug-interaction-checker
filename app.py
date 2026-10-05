@@ -10,6 +10,7 @@ import psycopg2.extras
 from psycopg2.extras import execute_values
 from datetime import datetime
 import csv
+import gzip
 import io
 import os
 
@@ -18,6 +19,16 @@ app.secret_key = os.environ.get("SECRET_KEY", "local-dev-secret-change-this")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "local-dev-password-change-this")
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
+
+# Interaction list imported from DDInter (https://ddinter.scbdd.com), built by
+# data/build_ddinter.py. Gives severity only, so these rows are labelled with
+# their own source and kept apart from the hand-written "curated" ones.
+DDINTER_DATA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "ddinter_interactions.csv.gz")
+DDINTER_DRUG_CLASS = "Class not listed"
+DDINTER_DESCRIPTION = (
+    "Listed in the DDInter database as a {level} interaction. DDInter's public data gives the "
+    "severity only; check a pharmacist or current prescribing reference for the mechanism and management."
+)
 
 
 def get_db():
@@ -76,9 +87,14 @@ def create_database():
         )
     """)
 
+    cursor.execute("ALTER TABLE interactions ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'curated'")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_interactions_pair ON interactions (drug1_id, drug2_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_interactions_pair_reverse ON interactions (drug2_id, drug1_id)")
+
     conn.commit()
     cursor.close()
     seed_drug_data(conn)
+    import_ddinter_data(conn)
     conn.close()
 
 
@@ -296,6 +312,53 @@ def seed_drug_data(conn):
     cursor.close()
 
 
+def import_ddinter_data(conn):
+    """Loads the DDInter drug list and interactions once. Runs in a single
+    transaction, so an interrupted import leaves nothing behind and is retried
+    on the next start. Hand-written (curated) interactions always win: a DDInter
+    pair is skipped when that pair already has an entry."""
+    if not os.path.exists(DDINTER_DATA_PATH):
+        return
+
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1 FROM interactions WHERE source = 'ddinter' LIMIT 1")
+    if cursor.fetchone():
+        cursor.close()
+        return
+
+    with gzip.open(DDINTER_DATA_PATH, "rt", encoding="utf-8", newline="") as handle:
+        reader = csv.reader(handle)
+        next(reader)
+        rows = [tuple(row) for row in reader if len(row) == 3]
+
+    cursor.execute("CREATE TEMP TABLE ddinter_stage (drug_a TEXT, drug_b TEXT, level TEXT) ON COMMIT DROP")
+    execute_values(cursor, "INSERT INTO ddinter_stage (drug_a, drug_b, level) VALUES %s", rows, page_size=5000)
+
+    cursor.execute("""
+        INSERT INTO drugs (name, drug_class)
+        SELECT staged.name, %s
+        FROM (SELECT drug_a AS name FROM ddinter_stage UNION SELECT drug_b FROM ddinter_stage) staged
+        WHERE NOT EXISTS (SELECT 1 FROM drugs d WHERE LOWER(d.name) = LOWER(staged.name))
+        ON CONFLICT (name) DO NOTHING
+    """, (DDINTER_DRUG_CLASS,))
+
+    cursor.execute("""
+        INSERT INTO interactions (drug1_id, drug2_id, severity, description, source)
+        SELECT d1.id, d2.id, s.level, REPLACE(%s, '{level}', s.level), 'ddinter'
+        FROM ddinter_stage s
+        JOIN (SELECT LOWER(name) AS key, MIN(id) AS id FROM drugs GROUP BY LOWER(name)) d1 ON d1.key = LOWER(s.drug_a)
+        JOIN (SELECT LOWER(name) AS key, MIN(id) AS id FROM drugs GROUP BY LOWER(name)) d2 ON d2.key = LOWER(s.drug_b)
+        WHERE NOT EXISTS (
+            SELECT 1 FROM interactions i
+            WHERE (i.drug1_id = d1.id AND i.drug2_id = d2.id)
+               OR (i.drug1_id = d2.id AND i.drug2_id = d1.id)
+        )
+    """, (DDINTER_DESCRIPTION,))
+
+    conn.commit()
+    cursor.close()
+
+
 @app.route("/")
 def index():
     return render_template("dashboard.html")
@@ -320,9 +383,9 @@ def search_drugs():
     cursor.execute("""
         SELECT * FROM drugs
         WHERE name ILIKE %s OR generic_name ILIKE %s OR drug_class ILIKE %s
-        ORDER BY name
+        ORDER BY (name ILIKE %s) DESC, name
         LIMIT 10
-    """, (f"%{query}%", f"%{query}%", f"%{query}%"))
+    """, (f"%{query}%", f"%{query}%", f"%{query}%", f"{query}%"))
     drugs = [dict(row) for row in cursor.fetchall()]
     cursor.close()
     conn.close()
@@ -340,10 +403,16 @@ def check_interaction():
     conn = get_db()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT * FROM drugs WHERE name ILIKE %s", (f"%{drug1_name}%",))
+    # Exact name first — with a large drug list a partial match is rarely unique.
+    drug_lookup = """
+        SELECT * FROM drugs WHERE name ILIKE %s
+        ORDER BY (LOWER(name) = LOWER(%s)) DESC, LENGTH(name), name
+        LIMIT 1
+    """
+    cursor.execute(drug_lookup, (f"%{drug1_name}%", drug1_name))
     drug1 = cursor.fetchone()
 
-    cursor.execute("SELECT * FROM drugs WHERE name ILIKE %s", (f"%{drug2_name}%",))
+    cursor.execute(drug_lookup, (f"%{drug2_name}%", drug2_name))
     drug2 = cursor.fetchone()
 
     if drug1 and drug2:
@@ -354,6 +423,8 @@ def check_interaction():
             JOIN drugs d2 ON i.drug2_id = d2.id
             WHERE (i.drug1_id = %s AND i.drug2_id = %s)
                OR (i.drug1_id = %s AND i.drug2_id = %s)
+            ORDER BY (i.source = 'curated') DESC
+            LIMIT 1
         """, (drug1["id"], drug2["id"], drug2["id"], drug1["id"]))
         builtin_interaction = cursor.fetchone()
 
@@ -362,7 +433,7 @@ def check_interaction():
             conn.close()
             return jsonify({
                 "found": True,
-                "source": "verified",
+                "source": "ddinter" if builtin_interaction["source"] == "ddinter" else "verified",
                 "drug1": dict(drug1),
                 "drug2": dict(drug2),
                 "interaction": dict(builtin_interaction)
@@ -475,6 +546,7 @@ def check_medication_list():
                     SELECT * FROM interactions
                     WHERE (drug1_id = %s AND drug2_id = %s)
                        OR (drug1_id = %s AND drug2_id = %s)
+                    ORDER BY (source = 'curated') DESC
                     LIMIT 1
                 """, (drug_a["id"], drug_b["id"], drug_b["id"], drug_a["id"]))
                 row = cursor.fetchone()
@@ -486,7 +558,7 @@ def check_medication_list():
                         "description": row["description"],
                         "clinical_effects": row["clinical_effects"],
                         "management": row["management"],
-                        "source": "verified",
+                        "source": "ddinter" if row["source"] == "ddinter" else "verified",
                     })
                     continue
 
@@ -518,7 +590,8 @@ def check_medication_list():
     cursor.close()
     conn.close()
 
-    flags.sort(key=lambda f: (SEVERITY_ORDER.get(f["severity"], 4), f["source"] != "verified"))
+    source_order = {"verified": 0, "ddinter": 1}
+    flags.sort(key=lambda f: (SEVERITY_ORDER.get(f["severity"], 4), source_order.get(f["source"], 2)))
 
     return jsonify({
         "checked": names,
@@ -553,11 +626,13 @@ def get_drug_interactions(drug_id):
         JOIN drugs d2 ON i.drug2_id = d2.id
         WHERE i.drug1_id = %s OR i.drug2_id = %s
         ORDER BY
+            (i.source = 'curated') DESC,
             CASE i.severity
                 WHEN 'Major' THEN 1
                 WHEN 'Moderate' THEN 2
                 WHEN 'Minor' THEN 3
-            END
+            END,
+            d1.name, d2.name
     """, (drug_id, drug_id))
 
     interactions = []
@@ -598,6 +673,9 @@ def get_summary():
     cursor.execute("SELECT COUNT(*) as total FROM interactions WHERE severity = 'Minor'")
     minor = cursor.fetchone()["total"]
 
+    cursor.execute("SELECT COUNT(*) as total FROM interactions WHERE source = 'ddinter'")
+    from_ddinter = cursor.fetchone()["total"]
+
     cursor.close()
     conn.close()
     return jsonify({
@@ -605,7 +683,8 @@ def get_summary():
         "total_interactions": total_interactions,
         "major": major,
         "moderate": moderate,
-        "minor": minor
+        "minor": minor,
+        "from_ddinter": from_ddinter
     })
 
 
