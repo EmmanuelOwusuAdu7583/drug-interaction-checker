@@ -59,6 +59,22 @@
         .severity-badge.Moderate { background: #feebc8; color: #c05621; }
         .severity-badge.Minor { background: #fefcbf; color: #975a16; }
 
+        .status-badge { padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+        .status-badge.pending { background: #edf2f7; color: #4a5568; }
+        .status-badge.approved { background: #c6f6d5; color: #276749; }
+        .status-badge.rejected { background: #fed7d7; color: #c53030; }
+        .review-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+        .review-btn { padding: 5px 10px; border-radius: 5px; border: 1px solid #cbd5e0; background: white; font-size: 12px; font-weight: 600; cursor: pointer; }
+        .review-btn.approve { border-color: #2f855a; color: #276749; }
+        .review-btn.reject { border-color: #c53030; color: #c53030; }
+        .review-btn:hover { background: #f7fafc; }
+        .review-btn:disabled { opacity: 0.5; cursor: default; }
+        .table-note { font-size: 12px; color: #666; margin-bottom: 14px; line-height: 1.5; }
+        .filter-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+        .filter-btn { padding: 6px 12px; border-radius: 16px; border: 1px solid #cbd5e0; background: white; font-size: 12px; font-weight: 600; cursor: pointer; }
+        .filter-btn.active { background: #234e52; color: white; border-color: #234e52; }
+        .detail-line { margin-top: 4px; }
+
         .loading { text-align: center; padding: 30px; color: #888; }
     </style>
 </head>
@@ -91,15 +107,17 @@
             <h2>All Submitted Interactions</h2>
             <a href="/api/admin/export-csv" class="export-btn">Export CSV</a>
         </div>
+        <p class="table-note" id="review-note"></p>
+        <div class="filter-row" id="filter-row"></div>
         <table>
             <thead>
                 <tr>
                     <th>Date</th><th>Drug 1</th><th>Drug 2</th><th>Severity</th>
-                    <th>Submitter</th><th>Profession</th><th>Description</th>
+                    <th>Submitter</th><th>Profession</th><th>Details</th><th>Review</th>
                 </tr>
             </thead>
             <tbody id="submissions-body">
-                <tr><td colspan="7" class="loading">Loading submissions...</td></tr>
+                <tr><td colspan="8" class="loading">Loading submissions...</td></tr>
             </tbody>
         </table>
     </div>
@@ -113,10 +131,10 @@
         const res = await fetch('/api/admin/summary');
         const d = await res.json();
 
-        document.getElementById('summary-cards').innerHTML = `
-            <div class="card"><h3>Total Submitted</h3><div class="value">${d.total_submitted}</div></div>
-            <div class="card"><h3>Unique Submitters</h3><div class="value">${d.total_submitters}</div></div>
-        `;
+        document.getElementById('summary-cards').innerHTML = summaryCards(d);
+        document.getElementById('review-note').textContent = d.pending_visible
+            ? 'Pending submissions show in the public checker marked "not independently verified". Approving marks one as reviewed by an administrator. Rejecting hides it from the public checker.'
+            : 'Pending submissions are hidden from the public checker until approved. Rejecting keeps one hidden.';
 
         new Chart(document.getElementById('severityChart'), {
             type: 'doughnut',
@@ -137,21 +155,115 @@
         });
     }
 
+    function escapeHtml(value) {
+        return String(value === null || value === undefined ? '' : value)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    const STATUS_LABELS = { pending: 'Pending', approved: 'Approved', rejected: 'Rejected' };
+    let submissions = [];
+    let statusFilter = 'all';
+
     async function loadSubmissions() {
         const res = await fetch('/api/admin/submitted-interactions');
-        const d = await res.json();
+        submissions = await res.json();
+        renderSubmissions();
+    }
 
-        document.getElementById('submissions-body').innerHTML = d.map(s => `
+    function renderSubmissions() {
+        const counts = { all: submissions.length, pending: 0, approved: 0, rejected: 0 };
+        submissions.forEach(s => { counts[s.status] = (counts[s.status] || 0) + 1; });
+
+        const filters = document.getElementById('filter-row');
+        filters.innerHTML = '';
+        [['all', 'All'], ['pending', 'Pending'], ['approved', 'Approved'], ['rejected', 'Rejected']].forEach(([key, label]) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'filter-btn' + (statusFilter === key ? ' active' : '');
+            button.textContent = `${label} (${counts[key]})`;
+            button.addEventListener('click', () => { statusFilter = key; renderSubmissions(); });
+            filters.appendChild(button);
+        });
+
+        const body = document.getElementById('submissions-body');
+        const shown = submissions.filter(s => statusFilter === 'all' || s.status === statusFilter);
+        if (!shown.length) {
+            body.innerHTML = `<tr><td colspan="8">${submissions.length ? 'No submissions with this status.' : 'No submissions yet.'}</td></tr>`;
+            return;
+        }
+
+        body.innerHTML = shown.map(s => `
             <tr>
-                <td>${s.submitted_at.split(' ')[0]}</td>
-                <td>${s.drug1_name}</td>
-                <td>${s.drug2_name}</td>
-                <td><span class="severity-badge ${s.severity}">${s.severity}</span></td>
-                <td>${s.submitter_name}<br><span style="color:#888;font-size:11px;">${s.submitter_email}</span></td>
-                <td>${s.profession || '-'}</td>
-                <td class="notes-cell">${s.description}</td>
+                <td>${escapeHtml(String(s.submitted_at).split(' ')[0])}</td>
+                <td>${escapeHtml(s.drug1_name)}</td>
+                <td>${escapeHtml(s.drug2_name)}</td>
+                <td><span class="severity-badge ${escapeHtml(s.severity)}">${escapeHtml(s.severity)}</span></td>
+                <td>${escapeHtml(s.submitter_name)}<br><span style="color:#888;font-size:11px;">${escapeHtml(s.submitter_email)}</span></td>
+                <td>${escapeHtml(s.profession || '-')}</td>
+                <td class="notes-cell">
+                    ${escapeHtml(s.description)}
+                    ${s.clinical_effects ? `<div class="detail-line"><strong>Effects:</strong> ${escapeHtml(s.clinical_effects)}</div>` : ''}
+                    ${s.management ? `<div class="detail-line"><strong>Management:</strong> ${escapeHtml(s.management)}</div>` : ''}
+                </td>
+                <td>
+                    <span class="status-badge ${escapeHtml(s.status)}">${escapeHtml(STATUS_LABELS[s.status] || s.status)}</span>
+                    <div class="review-actions">
+                        ${s.status !== 'approved' ? `<button type="button" class="review-btn approve" data-id="${s.id}" data-status="approved">Approve</button>` : ''}
+                        ${s.status !== 'rejected' ? `<button type="button" class="review-btn reject" data-id="${s.id}" data-status="rejected">Reject</button>` : ''}
+                        ${s.status !== 'pending' ? `<button type="button" class="review-btn" data-id="${s.id}" data-status="pending">Undo</button>` : ''}
+                    </div>
+                </td>
             </tr>
-        `).join('') || '<tr><td colspan="7">No submissions yet.</td></tr>';
+        `).join('');
+
+        body.querySelectorAll('.review-btn').forEach(button => {
+            button.addEventListener('click', () => reviewSubmission(Number(button.dataset.id), button.dataset.status, button));
+        });
+    }
+
+    async function reviewSubmission(id, status, button) {
+        button.disabled = true;
+        let data;
+        try {
+            const res = await fetch(`/api/admin/submitted-interactions/${id}/review`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status })
+            });
+            data = await res.json();
+        } catch (err) {
+            data = { error: 'Could not reach the server.' };
+        }
+        if (data.error) {
+            button.disabled = false;
+            button.textContent = data.error === 'Unauthorized' ? 'Log in again' : 'Failed, try again';
+            return;
+        }
+        const submission = submissions.find(s => s.id === id);
+        if (submission) submission.status = status;
+        renderSubmissions();
+        loadReviewCards();
+    }
+
+    // Status cards and the note explaining what each status does publicly.
+    async function loadReviewCards() {
+        const res = await fetch('/api/admin/summary');
+        const d = await res.json();
+        document.getElementById('summary-cards').innerHTML = summaryCards(d);
+        document.getElementById('review-note').textContent = d.pending_visible
+            ? 'Pending submissions show in the public checker marked "not independently verified". Approving marks one as reviewed by an administrator. Rejecting hides it from the public checker.'
+            : 'Pending submissions are hidden from the public checker until approved. Rejecting keeps one hidden.';
+    }
+
+    function summaryCards(d) {
+        return `
+            <div class="card"><h3>Total Submitted</h3><div class="value">${d.total_submitted}</div></div>
+            <div class="card"><h3>Waiting for Review</h3><div class="value">${d.by_status.pending}</div></div>
+            <div class="card"><h3>Approved</h3><div class="value">${d.by_status.approved}</div></div>
+            <div class="card"><h3>Rejected</h3><div class="value">${d.by_status.rejected}</div></div>
+            <div class="card"><h3>Unique Submitters</h3><div class="value">${d.total_submitters}</div></div>
+        `;
     }
 
     loadSummary();

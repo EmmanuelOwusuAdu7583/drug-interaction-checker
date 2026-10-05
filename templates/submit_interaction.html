@@ -217,7 +217,7 @@
 
                 <p class="privacy-note">
                     Your name, email, and profession are collected to add credibility context to your submission.
-                    Submitted interactions appear immediately in the public interaction checker and are not independently verified before publishing.
+                    Submitted interactions appear in the public interaction checker marked as not yet reviewed, until an administrator approves or rejects them.
                 </p>
             </div>
         </form>
@@ -344,7 +344,7 @@
             ? '<span class="source-tag verified">Verified database</span>'
             : severityOnly
             ? '<span class="source-tag ddinter">DDInter database, severity only</span>'
-            : `<span class="source-tag community">Community submitted, not independently verified${flag.submitted_by ? ' (' + escapeHtml(flag.submitted_by) + (flag.submitter_profession ? ', ' + escapeHtml(flag.submitter_profession) : '') + ')' : ''}</span>`;
+            : `<span class="source-tag community">${flag.reviewed ? 'Community submitted, reviewed by an administrator' : 'Community submitted, not independently verified'}${flag.submitted_by ? ' (' + escapeHtml(flag.submitted_by) + (flag.submitter_profession ? ', ' + escapeHtml(flag.submitter_profession) : '') + ')' : ''}</span>`;
         knownBox.className = `known-box ${escapeHtml(sev.toLowerCase())}`;
         knownBox.innerHTML = `
             <div class="known-head">

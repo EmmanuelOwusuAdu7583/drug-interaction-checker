@@ -28,3 +28,12 @@ sold only outside the US are not covered. The app loads this file into Postgres 
 
 To rebuild it, download and unzip the "Drug > NDC" file from the openFDA downloads page and run
 `python data/build_brand_names.py <path-to-drug-ndc-0001-of-0001.json>`.
+
+# Drug classes
+
+`drug_classes.csv.gz` gives the FDA "Established Pharmacologic Class" of each drug (for example Atorvastatin is
+an HMG-CoA Reductase Inhibitor), also from the openFDA NDC directory. It covers about 1,000 of the drugs; the
+rest keep "Class not listed". The app shows it as the class of imported drugs and uses it to point out two
+different drugs of the same class in a medication list. Loaded once on first start (`import_drug_classes` in
+`app.py`); rebuild with `python data/build_drug_classes.py <path-to-drug-ndc-0001-of-0001.json>` from inside
+the `data` folder.

@@ -525,6 +525,7 @@
 <footer>
     <p>Drug Interaction Checker | Built by Emmanuel Owusu Adu | Health Informatics Research</p>
     <p>For clinical use only. Always verify with current pharmaceutical references.</p>
+    <p>Brand names and drug classes come from the FDA National Drug Code directory (openFDA).</p>
     <p>Includes interaction severity data from <a href="https://ddinter.scbdd.com" target="_blank" rel="noopener" style="color:inherit;">DDInter</a> (Xiong et al., Nucleic Acids Research, 2022), used for non-commercial purposes under CC BY-NC-SA 4.0.</p>
 </footer>
 
@@ -633,10 +634,12 @@
             : escapeHtml(drug.name);
     }
 
-    function sourceNote(source) {
-        return source === 'ddinter'
-            ? '<span class="source-tag ddinter">DDInter database, severity only</span>'
-            : '';
+    function sourceNote(source, reviewed) {
+        if (source === 'ddinter') return '<span class="source-tag ddinter">DDInter database, severity only</span>';
+        if (source === 'community') {
+            return `<span class="source-tag community">${reviewed ? 'Community submitted, reviewed by an administrator' : 'Community submitted, not independently verified'}</span>`;
+        }
+        return '';
     }
 
     function selectDrug(name, inputId, listId, hiddenId) {
@@ -678,7 +681,7 @@
                     <div class="result-header">
                         <span class="severity-badge ${escapeHtml(interaction.severity)}">${escapeHtml(interaction.severity)} Interaction</span>
                         <span class="result-title ${escapeHtml(severityClass)}">${escapeHtml(data.drug1.name)} + ${escapeHtml(data.drug2.name)}</span>
-                        ${sourceNote(data.source)}
+                        ${sourceNote(data.source, data.reviewed)}
                     </div>
 
                     <div class="result-detail">
@@ -698,7 +701,7 @@
 
                     ${data.ddinter_severity ? `<div class="result-detail">
                         <h4>DDInter Rating</h4>
-                        <p>DDInter rates this pair: ${escapeHtml(data.ddinter_severity)}. The details above are community submitted and not independently verified.</p>
+                        <p>DDInter rates this pair: ${escapeHtml(data.ddinter_severity)}. The details above are community submitted.</p>
                     </div>` : ''}
 
                     <div class="drug-info-grid">
@@ -881,6 +884,10 @@
         const total = data.flags.length;
         let html = '';
 
+        if (data.same_class && data.same_class.length) {
+            html += data.same_class.map(c => `<div class="flag-summary clear">Same class: ${c.drugs.map(escapeHtml).join(' and ')} are in the same class (${escapeHtml(c.class)}). Two drugs from one class are sometimes prescribed together on purpose, but it can also be an accidental duplication. Check with the prescriber.</div>`).join('');
+        }
+
         if (data.duplicates && data.duplicates.length) {
             html += data.duplicates.map(d => `<div class="flag-summary flagged">${d.entered.map(escapeHtml).join(' and ')} are the same drug (${escapeHtml(d.drug)}). Check this is not a double dose.</div>`).join('');
         }
@@ -895,7 +902,7 @@
                     ? '<span class="source-tag verified">Verified database</span>'
                     : f.source === 'ddinter'
                     ? sourceNote('ddinter')
-                    : `<span class="source-tag community">Community submitted, not independently verified${f.submitted_by ? ' (' + escapeHtml(f.submitted_by) + (f.submitter_profession ? ', ' + escapeHtml(f.submitter_profession) : '') + ')' : ''}</span>`;
+                    : `<span class="source-tag community">${f.reviewed ? 'Community submitted, reviewed by an administrator' : 'Community submitted, not independently verified'}${f.submitted_by ? ' (' + escapeHtml(f.submitted_by) + (f.submitter_profession ? ', ' + escapeHtml(f.submitter_profession) : '') + ')' : ''}</span>`;
                 html += `
                     <div class="flag-item ${escapeHtml(cls)}">
                         <div class="flag-head">

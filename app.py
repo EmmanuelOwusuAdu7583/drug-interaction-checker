@@ -38,6 +38,20 @@ DDINTER_DESCRIPTION = (
 # data/build_brand_names.py.
 BRAND_DATA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "brand_names.csv.gz")
 
+# FDA pharmacologic class of each drug (Atorvastatin -> HMG-CoA Reductase Inhibitor),
+# built by data/build_drug_classes.py.
+CLASS_DATA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "drug_classes.csv.gz")
+
+# Community submissions are reviewed in the admin page. Rejected ones are never
+# shown. Set this to False to also hide submissions until an admin approves them.
+SHOW_PENDING_SUBMISSIONS = True
+SUBMISSION_STATUSES = ("pending", "approved", "rejected")
+
+
+def visible_submission_statuses():
+    return ("approved", "pending") if SHOW_PENDING_SUBMISSIONS else ("approved",)
+
+
 # Reading drug names from a photo of the packaging uses Claude and needs
 # ANTHROPIC_API_KEY. Photos are read in memory and never stored.
 PHOTO_MODEL = "claude-opus-5-5"
@@ -117,6 +131,9 @@ def create_database():
     """)
 
     cursor.execute("ALTER TABLE interactions ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'curated'")
+    cursor.execute("ALTER TABLE drugs ADD COLUMN IF NOT EXISTS pharm_class TEXT")
+    cursor.execute("ALTER TABLE submitted_interactions ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending'")
+    cursor.execute("ALTER TABLE submitted_interactions ADD COLUMN IF NOT EXISTS reviewed_at TEXT")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_interactions_pair ON interactions (drug1_id, drug2_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_interactions_pair_reverse ON interactions (drug2_id, drug1_id)")
 
@@ -125,6 +142,7 @@ def create_database():
     seed_drug_data(conn)
     import_ddinter_data(conn)
     import_brand_names(conn)
+    import_drug_classes(conn)
     conn.close()
 
 
@@ -419,6 +437,40 @@ def import_brand_names(conn):
     cursor.close()
 
 
+def import_drug_classes(conn):
+    """Loads the FDA pharmacologic class of each drug once. Imported drugs get it
+    as their displayed class; hand-written drugs keep their own wording and use
+    the FDA class only for the same-class check."""
+    if not os.path.exists(CLASS_DATA_PATH):
+        return
+
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1 FROM drugs WHERE pharm_class IS NOT NULL LIMIT 1")
+    if cursor.fetchone():
+        cursor.close()
+        return
+
+    with gzip.open(CLASS_DATA_PATH, "rt", encoding="utf-8", newline="") as handle:
+        reader = csv.reader(handle)
+        next(reader)
+        rows = [tuple(row) for row in reader if len(row) == 2]
+
+    cursor.execute("CREATE TEMP TABLE class_stage (drug TEXT, classes TEXT) ON COMMIT DROP")
+    execute_values(cursor, "INSERT INTO class_stage (drug, classes) VALUES %s", rows, page_size=1000)
+    cursor.execute("""
+        UPDATE drugs SET pharm_class = s.classes
+        FROM class_stage s
+        WHERE LOWER(drugs.name) = LOWER(s.drug)
+    """)
+    cursor.execute("""
+        UPDATE drugs SET drug_class = pharm_class
+        WHERE drug_class = %s AND pharm_class IS NOT NULL
+    """, (DDINTER_DRUG_CLASS,))
+
+    conn.commit()
+    cursor.close()
+
+
 @app.route("/")
 def index():
     return render_template("dashboard.html", photo_enabled=photo_reading_enabled())
@@ -542,11 +594,12 @@ def check_interaction():
         SELECT si.*, sub.name as submitter_name, sub.profession
         FROM submitted_interactions si
         JOIN submitters sub ON si.submitter_id = sub.id
-        WHERE (si.drug1_name ILIKE %s AND si.drug2_name ILIKE %s)
-           OR (si.drug1_name ILIKE %s AND si.drug2_name ILIKE %s)
-        ORDER BY si.submitted_at DESC
+        WHERE si.status IN %s
+          AND ((si.drug1_name ILIKE %s AND si.drug2_name ILIKE %s)
+            OR (si.drug1_name ILIKE %s AND si.drug2_name ILIKE %s))
+        ORDER BY (si.status = 'approved') DESC, si.submitted_at DESC
         LIMIT 1
-    """, (f"%{drug1_name}%", f"%{drug2_name}%", f"%{drug2_name}%", f"%{drug1_name}%"))
+    """, (visible_submission_statuses(), f"%{drug1_name}%", f"%{drug2_name}%", f"%{drug2_name}%", f"%{drug1_name}%"))
     community_interaction = cursor.fetchone()
 
     cursor.close()
@@ -561,6 +614,7 @@ def check_interaction():
             "interaction": dict(community_interaction),
             "submitted_by": community_interaction["submitter_name"],
             "submitter_profession": community_interaction["profession"],
+            "reviewed": community_interaction["status"] == "approved",
             "ddinter_severity": ddinter_interaction["severity"] if ddinter_interaction else None
         })
 
@@ -689,6 +743,19 @@ def check_medication_list():
         if len(entered) > 1
     ]
 
+    # Different drugs that share an FDA pharmacologic class (two NSAIDs, two
+    # statins). Not an interaction, but a common accidental duplication.
+    by_class = defaultdict(list)
+    for drug in {drug["id"]: drug for drug in resolved.values()}.values():
+        for class_name in (drug.get("pharm_class") or "").split("; "):
+            if class_name:
+                by_class[class_name].append(drug["name"])
+    same_class = [
+        {"class": class_name, "drugs": sorted(drug_names)}
+        for class_name, drug_names in sorted(by_class.items())
+        if len(drug_names) > 1
+    ]
+
     flags = []
     pairs_checked = 0
     seen_pairs = set()
@@ -739,11 +806,12 @@ def check_medication_list():
                 SELECT si.*, sub.name AS submitter_name, sub.profession
                 FROM submitted_interactions si
                 JOIN submitters sub ON si.submitter_id = sub.id
-                WHERE (LOWER(TRIM(si.drug1_name)) = LOWER(%s) AND LOWER(TRIM(si.drug2_name)) = LOWER(%s))
-                   OR (LOWER(TRIM(si.drug1_name)) = LOWER(%s) AND LOWER(TRIM(si.drug2_name)) = LOWER(%s))
-                ORDER BY si.submitted_at DESC
+                WHERE si.status IN %s
+                  AND ((LOWER(TRIM(si.drug1_name)) = LOWER(%s) AND LOWER(TRIM(si.drug2_name)) = LOWER(%s))
+                    OR (LOWER(TRIM(si.drug1_name)) = LOWER(%s) AND LOWER(TRIM(si.drug2_name)) = LOWER(%s)))
+                ORDER BY (si.status = 'approved') DESC, si.submitted_at DESC
                 LIMIT 1
-            """, (label_a, label_b, label_b, label_a))
+            """, (visible_submission_statuses(), label_a, label_b, label_b, label_a))
             row = cursor.fetchone()
             if row:
                 flags.append({
@@ -756,6 +824,7 @@ def check_medication_list():
                     "source": "community",
                     "submitted_by": row["submitter_name"],
                     "submitter_profession": row["profession"],
+                    "reviewed": row["status"] == "approved",
                     "ddinter_severity": ddinter_row["severity"] if ddinter_row else None,
                 })
             elif ddinter_row:
@@ -790,6 +859,7 @@ def check_medication_list():
         "unrecognized": unrecognized,
         "matched": matched,
         "duplicates": duplicates,
+        "same_class": same_class,
         "counts": {
             "major": sum(1 for f in flags if severity_rank(f) == 1),
             "moderate": sum(1 for f in flags if severity_rank(f) == 2),
@@ -1097,7 +1167,11 @@ def submit_interaction():
 
     return jsonify({
         "success": True,
-        "message": "Thank you. Your submitted interaction has been added and is now visible in the interaction checker."
+        "message": (
+            "Thank you. Your submission has been added and shows in the checker as not yet reviewed."
+            if SHOW_PENDING_SUBMISSIONS else
+            "Thank you. Your submission has been received and will show in the checker once it is reviewed."
+        )
     })
 
 
@@ -1149,6 +1223,32 @@ def admin_get_submitted_interactions():
     return jsonify(data)
 
 
+@app.route("/api/admin/submitted-interactions/<int:submission_id>/review", methods=["POST"])
+def admin_review_submission(submission_id):
+    """Approve or reject a submission, or put it back to pending."""
+    if not admin_required():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    status = (request.get_json(silent=True) or {}).get("status")
+    if status not in SUBMISSION_STATUSES:
+        return jsonify({"error": "Status must be pending, approved or rejected"}), 400
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE submitted_interactions SET status = %s, reviewed_at = %s
+        WHERE id = %s RETURNING id
+    """, (status, None if status == "pending" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), submission_id))
+    updated = cursor.fetchone()
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    if not updated:
+        return jsonify({"error": "Submission not found"}), 404
+    return jsonify({"success": True, "id": submission_id, "status": status})
+
+
 @app.route("/api/admin/summary")
 def admin_summary():
     if not admin_required():
@@ -1170,6 +1270,9 @@ def admin_summary():
     """)
     by_severity = [dict(row) for row in cursor.fetchall()]
 
+    cursor.execute("SELECT status, COUNT(*) as count FROM submitted_interactions GROUP BY status")
+    by_status = {row["status"]: row["count"] for row in cursor.fetchall()}
+
     cursor.execute("""
         SELECT profession, COUNT(*) as count
         FROM submitters
@@ -1186,7 +1289,9 @@ def admin_summary():
         "total_submitted": total_submitted,
         "total_submitters": total_submitters,
         "by_severity": by_severity,
-        "by_profession": by_profession
+        "by_profession": by_profession,
+        "by_status": {status: by_status.get(status, 0) for status in SUBMISSION_STATUSES},
+        "pending_visible": SHOW_PENDING_SUBMISSIONS
     })
 
 
@@ -1199,7 +1304,7 @@ def export_csv():
     cursor = conn.cursor()
     cursor.execute("""
         SELECT si.id, si.drug1_name, si.drug2_name, si.severity, si.description,
-               si.clinical_effects, si.management, si.submitted_at,
+               si.clinical_effects, si.management, si.submitted_at, si.status, si.reviewed_at,
                sub.name as submitter_name, sub.email as submitter_email, sub.profession
         FROM submitted_interactions si
         JOIN submitters sub ON si.submitter_id = sub.id
@@ -1212,12 +1317,14 @@ def export_csv():
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["ID", "Drug 1", "Drug 2", "Severity", "Description", "Clinical Effects",
-                      "Management", "Submitted At", "Submitter Name", "Submitter Email", "Profession"])
+                      "Management", "Submitted At", "Status", "Reviewed At",
+                      "Submitter Name", "Submitter Email", "Profession"])
 
     for row in rows:
         writer.writerow([row["id"], row["drug1_name"], row["drug2_name"], row["severity"],
                           row["description"], row["clinical_effects"], row["management"],
-                          row["submitted_at"], row["submitter_name"], row["submitter_email"], row["profession"]])
+                          row["submitted_at"], row["status"], row["reviewed_at"],
+                          row["submitter_name"], row["submitter_email"], row["profession"]])
 
     csv_data = output.getvalue()
     output.close()
