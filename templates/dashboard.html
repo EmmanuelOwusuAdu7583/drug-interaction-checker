@@ -618,6 +618,11 @@
                         <p>${escapeHtml(interaction.management)}</p>
                     </div>` : ''}
 
+                    ${data.ddinter_severity ? `<div class="result-detail">
+                        <h4>DDInter Rating</h4>
+                        <p>DDInter rates this pair: ${escapeHtml(data.ddinter_severity)}. The details above are community submitted and not independently verified.</p>
+                    </div>` : ''}
+
                     <div class="drug-info-grid">
                         <div class="drug-info-card">
                             <h4>${escapeHtml(data.drug1.name)}</h4>
@@ -818,6 +823,7 @@
                         ${f.source === 'ddinter' ? '' : `<p>${escapeHtml(f.description)}</p>`}
                         ${f.clinical_effects ? `<p><strong>Clinical effects:</strong> ${escapeHtml(f.clinical_effects)}</p>` : ''}
                         ${f.management ? `<p><strong>Management:</strong> ${escapeHtml(f.management)}</p>` : ''}
+                        ${f.ddinter_severity ? `<p><strong>DDInter rates this pair:</strong> ${escapeHtml(f.ddinter_severity)}</p>` : ''}
                     </div>`;
             });
         } else {

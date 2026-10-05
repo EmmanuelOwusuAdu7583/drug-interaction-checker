@@ -428,16 +428,21 @@ def check_interaction():
         """, (drug1["id"], drug2["id"], drug2["id"], drug1["id"]))
         builtin_interaction = cursor.fetchone()
 
-        if builtin_interaction:
+        # A DDInter entry has a severity but no detail, so a community submission
+        # for the same pair (checked below) is shown in its place when one exists.
+        if builtin_interaction and builtin_interaction["source"] != "ddinter":
             cursor.close()
             conn.close()
             return jsonify({
                 "found": True,
-                "source": "ddinter" if builtin_interaction["source"] == "ddinter" else "verified",
+                "source": "verified",
                 "drug1": dict(drug1),
                 "drug2": dict(drug2),
                 "interaction": dict(builtin_interaction)
             })
+        ddinter_interaction = builtin_interaction
+    else:
+        ddinter_interaction = None
 
     cursor.execute("""
         SELECT si.*, sub.name as submitter_name, sub.profession
@@ -461,7 +466,17 @@ def check_interaction():
             "drug2": {"name": drug2_name, "generic_name": "", "description": "", "drug_class": ""} if not drug2 else dict(drug2),
             "interaction": dict(community_interaction),
             "submitted_by": community_interaction["submitter_name"],
-            "submitter_profession": community_interaction["profession"]
+            "submitter_profession": community_interaction["profession"],
+            "ddinter_severity": ddinter_interaction["severity"] if ddinter_interaction else None
+        })
+
+    if ddinter_interaction:
+        return jsonify({
+            "found": True,
+            "source": "ddinter",
+            "drug1": dict(drug1),
+            "drug2": dict(drug2),
+            "interaction": dict(ddinter_interaction)
         })
 
     if drug1 and drug2:
@@ -541,6 +556,9 @@ def check_medication_list():
             pairs_checked += 1
             drug_a, drug_b = resolved.get(name_a), resolved.get(name_b)
 
+            # A DDInter entry has a severity but no detail, so a community
+            # submission for the same pair is shown in its place when one exists.
+            ddinter_row = None
             if drug_a and drug_b and drug_a["id"] != drug_b["id"]:
                 cursor.execute("""
                     SELECT * FROM interactions
@@ -550,7 +568,7 @@ def check_medication_list():
                     LIMIT 1
                 """, (drug_a["id"], drug_b["id"], drug_b["id"], drug_a["id"]))
                 row = cursor.fetchone()
-                if row:
+                if row and row["source"] != "ddinter":
                     flags.append({
                         "drug1": drug_a["name"],
                         "drug2": drug_b["name"],
@@ -558,9 +576,10 @@ def check_medication_list():
                         "description": row["description"],
                         "clinical_effects": row["clinical_effects"],
                         "management": row["management"],
-                        "source": "ddinter" if row["source"] == "ddinter" else "verified",
+                        "source": "verified",
                     })
                     continue
+                ddinter_row = row
 
             label_a = drug_a["name"] if drug_a else name_a
             label_b = drug_b["name"] if drug_b else name_b
@@ -585,13 +604,32 @@ def check_medication_list():
                     "source": "community",
                     "submitted_by": row["submitter_name"],
                     "submitter_profession": row["profession"],
+                    "ddinter_severity": ddinter_row["severity"] if ddinter_row else None,
+                })
+            elif ddinter_row:
+                flags.append({
+                    "drug1": drug_a["name"],
+                    "drug2": drug_b["name"],
+                    "severity": ddinter_row["severity"],
+                    "description": ddinter_row["description"],
+                    "clinical_effects": ddinter_row["clinical_effects"],
+                    "management": ddinter_row["management"],
+                    "source": "ddinter",
                 })
 
     cursor.close()
     conn.close()
 
+    # A community entry is ranked and counted by the more severe of its own rating and
+    # DDInter's, so an under-rated submission cannot push a pair down the list.
+    def severity_rank(flag):
+        ranks = [SEVERITY_ORDER.get(flag["severity"], 4)]
+        if flag.get("ddinter_severity"):
+            ranks.append(SEVERITY_ORDER.get(flag["ddinter_severity"], 4))
+        return min(ranks)
+
     source_order = {"verified": 0, "ddinter": 1}
-    flags.sort(key=lambda f: (SEVERITY_ORDER.get(f["severity"], 4), source_order.get(f["source"], 2)))
+    flags.sort(key=lambda f: (severity_rank(f), source_order.get(f["source"], 2)))
 
     return jsonify({
         "checked": names,
@@ -599,9 +637,9 @@ def check_medication_list():
         "flags": flags,
         "unrecognized": unrecognized,
         "counts": {
-            "major": sum(1 for f in flags if f["severity"] == "Major"),
-            "moderate": sum(1 for f in flags if f["severity"] == "Moderate"),
-            "minor": sum(1 for f in flags if f["severity"] == "Minor"),
+            "major": sum(1 for f in flags if severity_rank(f) == 1),
+            "moderate": sum(1 for f in flags if severity_rank(f) == 2),
+            "minor": sum(1 for f in flags if severity_rank(f) == 3),
         },
     })
 
