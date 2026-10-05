@@ -42,9 +42,10 @@ BRAND_DATA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data
 # built by data/build_drug_classes.py.
 CLASS_DATA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "drug_classes.csv.gz")
 
-# Community submissions are reviewed in the admin page. Rejected ones are never
-# shown. Set this to False to also hide submissions until an admin approves them.
-SHOW_PENDING_SUBMISSIONS = True
+# Community submissions are reviewed in the admin page and reach the public
+# checker only once approved. Set this to True to also show pending ones, marked
+# as not independently verified. Rejected ones are never shown.
+SHOW_PENDING_SUBMISSIONS = False
 SUBMISSION_STATUSES = ("pending", "approved", "rejected")
 
 
@@ -1113,7 +1114,7 @@ def get_summary():
 
 @app.route("/submit-interaction")
 def submit_interaction_form():
-    return render_template("submit_interaction.html")
+    return render_template("submit_interaction.html", pending_visible=SHOW_PENDING_SUBMISSIONS)
 
 
 @app.route("/api/submit-interaction", methods=["POST"])

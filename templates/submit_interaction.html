@@ -217,7 +217,7 @@
 
                 <p class="privacy-note">
                     Your name, email, and profession are collected to add credibility context to your submission.
-                    Submitted interactions appear in the public interaction checker marked as not yet reviewed, until an administrator approves or rejects them.
+                    {% if pending_visible %}Submitted interactions appear in the public interaction checker marked as not yet reviewed, until an administrator approves or rejects them.{% else %}Submitted interactions are reviewed by an administrator and appear in the public interaction checker only once approved.{% endif %}
                 </p>
             </div>
         </form>
