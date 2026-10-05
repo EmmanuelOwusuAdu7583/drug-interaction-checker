@@ -365,6 +365,65 @@
         .drug-grid-count { font-size: 12px; color: #666; margin-bottom: 12px; }
         .medlist-note { font-size: 12px; color: #744210; background: #fffbeb; border: 1px solid #f6e05e; border-radius: 8px; padding: 12px; margin-top: 14px; line-height: 1.5; }
 
+        .photo-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
+        .photo-btn {
+            display: inline-block;
+            padding: 10px 18px;
+            background: white;
+            color: #234e52;
+            border: 2px solid #234e52;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .photo-btn:hover, .photo-btn:focus-within { background: #e6fffa; }
+        .photo-btn input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+        .photo-btn.busy { opacity: 0.6; pointer-events: none; }
+        .photo-status { font-size: 13px; color: #666; }
+        .photo-review {
+            display: none;
+            margin-top: 14px;
+            padding: 16px;
+            background: #f7fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 10px;
+            font-size: 14px;
+        }
+        .photo-review h3 { font-size: 15px; color: #234e52; margin-bottom: 4px; }
+        .photo-review .hint { font-size: 12px; color: #666; margin-bottom: 12px; }
+        .photo-review label { display: flex; align-items: flex-start; gap: 10px; padding: 8px 0; cursor: pointer; }
+        .photo-review label input { margin-top: 3px; width: 16px; height: 16px; }
+        .photo-review .from { display: block; font-size: 12px; color: #666; }
+        .photo-review .from.unprinted { color: #975a16; }
+        .photo-review .actions { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+        .photo-review .cancel-btn { padding: 12px 18px; background: none; border: none; color: #4a5568; font-size: 14px; cursor: pointer; text-decoration: underline; }
+        .brand-match { font-weight: 400; color: #666; }
+        .print-btn {
+            margin-top: 14px;
+            padding: 10px 18px;
+            background: white;
+            color: #234e52;
+            border: 2px solid #234e52;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .print-btn:hover { background: #e6fffa; }
+        #print-header { display: none; }
+
+        /* Printing keeps only the medication list report. */
+        @media print {
+            body { background: white; }
+            body * { visibility: hidden; }
+            #print-header, #print-header *, #medlist-result, #medlist-result * { visibility: visible; }
+            #print-header { display: block; position: absolute; top: 0; left: 0; right: 0; padding: 0 12px; }
+            #medlist-result { position: absolute; top: 120px; left: 0; right: 0; padding: 0 12px; }
+            .print-btn { display: none; }
+            .flag-item, .flag-summary, .medlist-note { break-inside: avoid; }
+        }
+
         @media (max-width: 600px) {
             .drug-inputs { grid-template-columns: 1fr; }
             .vs-badge { display: none; }
@@ -405,10 +464,22 @@
             <button class="add-btn" type="button" onclick="addMedFromInput()">Add</button>
         </div>
 
+        {% if photo_enabled %}
+        <div class="photo-row">
+            <label class="photo-btn" id="photo-btn">
+                Scan a photo of the medicine
+                <input type="file" id="photo-input" accept="image/*" capture="environment" onchange="scanPhoto(this)">
+            </label>
+            <span class="photo-status" id="photo-status" role="status">Take or choose a photo of the box, pack or prescription. Photos are read once and not saved.</span>
+        </div>
+        <div class="photo-review" id="photo-review"></div>
+        {% endif %}
+
         <div class="med-chips" id="med-chips"></div>
 
         <button class="check-btn" type="button" onclick="runMedListCheck()">Check All Interactions</button>
 
+        <div id="print-header"></div>
         <div id="medlist-result" style="display:none;"></div>
     </div>
 
@@ -547,12 +618,19 @@
         drugs.forEach(drug => {
             const item = document.createElement('div');
             item.className = 'autocomplete-item';
-            item.innerHTML = `${escapeHtml(drug.name)}<div class="drug-class">${escapeHtml(drug.drug_class)}</div>`;
+            item.innerHTML = `${drugLabel(drug)}<div class="drug-class">${escapeHtml(drug.drug_class)}</div>`;
             item.addEventListener('click', () => selectDrug(drug.name, input.id, listId, hiddenId));
             list.appendChild(item);
         });
 
         list.style.display = 'block';
+    }
+
+    // "Lipitor (brand of Atorvastatin)" when the search matched a brand name
+    function drugLabel(drug) {
+        return drug.matched_brand
+            ? `${escapeHtml(drug.matched_brand)} <span class="brand-match">(brand of ${escapeHtml(drug.name)})</span>`
+            : escapeHtml(drug.name);
     }
 
     function sourceNote(source) {
@@ -732,7 +810,7 @@
         drugs.forEach(drug => {
             const item = document.createElement('div');
             item.className = 'autocomplete-item';
-            item.innerHTML = `${escapeHtml(drug.name)}<div class="drug-class">${escapeHtml(drug.drug_class)}</div>`;
+            item.innerHTML = `${drugLabel(drug)}<div class="drug-class">${escapeHtml(drug.drug_class)}</div>`;
             item.addEventListener('click', () => addMed(drug.name));
             list.appendChild(item);
         });
@@ -803,6 +881,10 @@
         const total = data.flags.length;
         let html = '';
 
+        if (data.duplicates && data.duplicates.length) {
+            html += data.duplicates.map(d => `<div class="flag-summary flagged">${d.entered.map(escapeHtml).join(' and ')} are the same drug (${escapeHtml(d.drug)}). Check this is not a double dose.</div>`).join('');
+        }
+
         if (total > 0) {
             const c = data.counts;
             html += `<div class="flag-summary flagged">${total} interaction${total === 1 ? '' : 's'} flagged among ${data.pairs_checked} pair${data.pairs_checked === 1 ? '' : 's'} checked (${c.major} major, ${c.moderate} moderate, ${c.minor} minor)</div>`;
@@ -834,13 +916,125 @@
             html += `<div class="medlist-note"><strong>Not in the database, so not fully checked:</strong> ${data.unrecognized.map(escapeHtml).join(', ')}. Interactions involving these medications may exist and would not be flagged.</div>`;
         }
 
+        if (data.matched && data.matched.length) {
+            html += `<div class="medlist-note"><strong>Checked under another name:</strong> ${data.matched.map(m => `${escapeHtml(m.entered)} as ${escapeHtml(m.drug)}`).join('; ')}.</div>`;
+        }
+
         if (data.flags.some(f => f.source === 'ddinter')) {
             html += `<div class="medlist-note"><strong>About "DDInter database, severity only" flags:</strong> these come from the DDInter research database, which publishes the severity of each interaction but not the mechanism or management. Check a pharmacist or current prescribing reference for what to do.</div>`;
         }
 
         html += `<div class="medlist-note">The database holds a limited set of interactions. The absence of a flag is not evidence that a combination is safe. Always confirm with a pharmacist or current prescribing references.</div>`;
 
+        html += `<button class="print-btn" type="button" onclick="window.print()">Print or save as PDF</button>`;
+
         out.innerHTML = html;
+
+        document.getElementById('print-header').innerHTML = `
+            <h2 style="color:#234e52; margin-bottom:6px;">Medication Interaction Report</h2>
+            <p style="font-size:13px; margin-bottom:4px;"><strong>Medications checked:</strong> ${data.checked.map(escapeHtml).join(', ')}</p>
+            <p style="font-size:12px; color:#555;">Drug Interaction Checker, ${escapeHtml(new Date().toLocaleString())}</p>`;
+    }
+
+    // ---------- Photo of the medicine ----------
+    const PHOTO_MAX_SIDE = 1600;
+
+    // Phone photos are large; shrink before sending. Falls back to the original
+    // file if the browser cannot do it.
+    async function shrinkPhoto(file) {
+        try {
+            const bitmap = await createImageBitmap(file);
+            const scale = Math.min(1, PHOTO_MAX_SIDE / Math.max(bitmap.width, bitmap.height));
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.round(bitmap.width * scale);
+            canvas.height = Math.round(bitmap.height * scale);
+            canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+            const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.85));
+            return blob || file;
+        } catch (err) {
+            return file;
+        }
+    }
+
+    async function scanPhoto(input) {
+        const file = input.files && input.files[0];
+        input.value = '';
+        if (!file) return;
+
+        const button = document.getElementById('photo-btn');
+        const status = document.getElementById('photo-status');
+        const review = document.getElementById('photo-review');
+        review.style.display = 'none';
+        button.classList.add('busy');
+        status.textContent = 'Reading the photo, this can take up to 20 seconds…';
+
+        let data;
+        try {
+            const form = new FormData();
+            form.append('photo', await shrinkPhoto(file), 'photo.jpg');
+            const response = await fetch('/api/read-drug-photo', { method: 'POST', body: form });
+            data = await response.json();
+        } catch (err) {
+            data = { error: 'The photo could not be sent. Check your connection and try again.' };
+        }
+        button.classList.remove('busy');
+
+        if (data.error) {
+            status.textContent = data.error;
+            return;
+        }
+        status.textContent = '';
+        showPhotoReview(data);
+    }
+
+    // Nothing from a photo is added until the user confirms it here.
+    function showPhotoReview(data) {
+        const review = document.getElementById('photo-review');
+        const unknown = data.unrecognized.length
+            ? `<div class="medlist-note"><strong>Read from the photo but not in the database:</strong> ${data.unrecognized.map(escapeHtml).join(', ')}. These cannot be checked.</div>`
+            : '';
+
+        if (!data.recognized.length) {
+            review.innerHTML = `
+                <h3>No medicine could be matched from that photo</h3>
+                <p class="hint">Try a closer, sharper photo of the name on the pack, or type the name instead.</p>
+                ${unknown}
+                <div class="actions"><button type="button" class="cancel-btn" id="photo-cancel">Close</button></div>`;
+        } else {
+            review.innerHTML = `
+                <h3>Is this what the photo shows?</h3>
+                <p class="hint">Untick anything that is wrong before adding. A misread name gives a wrong result.</p>
+                ${data.recognized.map((item, index) => `
+                    <label>
+                        <input type="checkbox" data-index="${index}" checked>
+                        <span><strong>${escapeHtml(item.drug)}</strong>
+                            <span class="from${item.ingredients_printed ? '' : ' unprinted'}">${photoSource(item)}</span>
+                        </span>
+                    </label>`).join('')}
+                ${unknown}
+                <div class="actions">
+                    <button type="button" class="add-btn" id="photo-add">Add ticked to the list</button>
+                    <button type="button" class="cancel-btn" id="photo-cancel">Cancel</button>
+                </div>`;
+            document.getElementById('photo-add').addEventListener('click', () => {
+                review.querySelectorAll('input[type="checkbox"]').forEach(box => {
+                    if (box.checked) addMed(data.recognized[Number(box.dataset.index)].drug);
+                });
+                review.style.display = 'none';
+            });
+        }
+        document.getElementById('photo-cancel').addEventListener('click', () => { review.style.display = 'none'; });
+        review.style.display = 'block';
+    }
+
+    function photoSource(item) {
+        const brand = item.brand && item.brand.toLowerCase() !== item.drug.toLowerCase() ? ` on ${escapeHtml(item.brand)}` : '';
+        if (!item.ingredients_printed) {
+            return `Ingredient not readable in the photo; taken from the brand name${item.brand ? ' ' + escapeHtml(item.brand) : ''}. Please check the pack.`;
+        }
+        return item.read.toLowerCase() === item.drug.toLowerCase()
+            ? `Read from the photo${brand}`
+            : `Read as "${escapeHtml(item.read)}"${brand}`;
     }
 
     document.addEventListener('click', function(e) {

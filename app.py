@@ -8,11 +8,14 @@ from flask import Flask, render_template, jsonify, request, session, redirect, u
 import psycopg2
 import psycopg2.extras
 from psycopg2.extras import execute_values
+from collections import defaultdict, deque
 from datetime import datetime
 import csv
 import gzip
 import io
+import json
 import os
+import time
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "local-dev-secret-change-this")
@@ -29,6 +32,24 @@ DDINTER_DESCRIPTION = (
     "Listed in the DDInter database as a {level} interaction. DDInter's public data gives the "
     "severity only; check a pharmacist or current prescribing reference for the mechanism and management."
 )
+
+
+# US brand names (Lipitor -> Atorvastatin) from the FDA's NDC directory, built by
+# data/build_brand_names.py.
+BRAND_DATA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "brand_names.csv.gz")
+
+# Reading drug names from a photo of the packaging uses Claude and needs
+# ANTHROPIC_API_KEY. Photos are read in memory and never stored.
+PHOTO_MODEL = "claude-opus-5-5"
+PHOTO_MEDIA_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+PHOTO_MAX_BYTES = 5 * 1024 * 1024
+PHOTO_LIMIT_COUNT = 8        # photos per visitor...
+PHOTO_LIMIT_SECONDS = 600    # ...in this many seconds
+app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024
+
+
+def photo_reading_enabled():
+    return bool(os.environ.get("ANTHROPIC_API_KEY"))
 
 
 def get_db():
@@ -87,6 +108,14 @@ def create_database():
         )
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS brand_names (
+            id SERIAL PRIMARY KEY,
+            brand TEXT NOT NULL UNIQUE,
+            drug_id INTEGER NOT NULL REFERENCES drugs (id)
+        )
+    """)
+
     cursor.execute("ALTER TABLE interactions ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'curated'")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_interactions_pair ON interactions (drug1_id, drug2_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_interactions_pair_reverse ON interactions (drug2_id, drug1_id)")
@@ -95,6 +124,7 @@ def create_database():
     cursor.close()
     seed_drug_data(conn)
     import_ddinter_data(conn)
+    import_brand_names(conn)
     conn.close()
 
 
@@ -359,9 +389,39 @@ def import_ddinter_data(conn):
     cursor.close()
 
 
+def import_brand_names(conn):
+    """Loads the brand name list once, after the drugs it points to exist."""
+    if not os.path.exists(BRAND_DATA_PATH):
+        return
+
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1 FROM brand_names LIMIT 1")
+    if cursor.fetchone():
+        cursor.close()
+        return
+
+    with gzip.open(BRAND_DATA_PATH, "rt", encoding="utf-8", newline="") as handle:
+        reader = csv.reader(handle)
+        next(reader)
+        rows = [tuple(row) for row in reader if len(row) == 2]
+
+    cursor.execute("CREATE TEMP TABLE brand_stage (brand TEXT, drug TEXT) ON COMMIT DROP")
+    execute_values(cursor, "INSERT INTO brand_stage (brand, drug) VALUES %s", rows, page_size=1000)
+    cursor.execute("""
+        INSERT INTO brand_names (brand, drug_id)
+        SELECT s.brand, d.id
+        FROM brand_stage s
+        JOIN (SELECT LOWER(name) AS key, MIN(id) AS id FROM drugs GROUP BY LOWER(name)) d ON d.key = LOWER(s.drug)
+        ON CONFLICT (brand) DO NOTHING
+    """)
+
+    conn.commit()
+    cursor.close()
+
+
 @app.route("/")
 def index():
-    return render_template("dashboard.html")
+    return render_template("dashboard.html", photo_enabled=photo_reading_enabled())
 
 
 @app.route("/api/drugs")
@@ -377,19 +437,53 @@ def get_all_drugs():
 
 @app.route("/api/search-drugs")
 def search_drugs():
-    query = request.args.get("q", "")
+    """Matches drug names, generic names, classes and brand names. A brand match
+    returns its drug with "matched_brand" set, so the page can show which brand
+    led to it. Names that start with the typed text come first."""
+    query = request.args.get("q", "").strip()
+    if not query:
+        return jsonify([])
+    contains, starts = f"%{query}%", f"{query}%"
+
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT * FROM drugs
+        SELECT *, (name ILIKE %s) AS starts_with FROM drugs
         WHERE name ILIKE %s OR generic_name ILIKE %s OR drug_class ILIKE %s
         ORDER BY (name ILIKE %s) DESC, name
         LIMIT 10
-    """, (f"%{query}%", f"%{query}%", f"%{query}%", f"{query}%"))
-    drugs = [dict(row) for row in cursor.fetchall()]
+    """, (starts, contains, contains, contains, starts))
+    drug_rows = [dict(row) for row in cursor.fetchall()]
+
+    cursor.execute("""
+        SELECT d.*, b.brand AS matched_brand, (b.brand ILIKE %s) AS starts_with
+        FROM brand_names b
+        JOIN drugs d ON d.id = b.drug_id
+        WHERE b.brand ILIKE %s
+        ORDER BY (b.brand ILIKE %s) DESC, b.brand
+        LIMIT 10
+    """, (starts, contains, starts))
+    brand_rows = [dict(row) for row in cursor.fetchall()]
     cursor.close()
     conn.close()
-    return jsonify(drugs)
+
+    ordered = (
+        [row for row in drug_rows if row["starts_with"]]
+        + [row for row in brand_rows if row["starts_with"]]
+        + [row for row in drug_rows if not row["starts_with"]]
+        + [row for row in brand_rows if not row["starts_with"]]
+    )
+    results = []
+    seen_ids = set()
+    for row in ordered:
+        if row["id"] in seen_ids:
+            continue
+        seen_ids.add(row["id"])
+        row.pop("starts_with")
+        results.append(row)
+        if len(results) == 10:
+            break
+    return jsonify(results)
 
 
 @app.route("/api/check-interaction")
@@ -410,10 +504,10 @@ def check_interaction():
         LIMIT 1
     """
     cursor.execute(drug_lookup, (f"%{drug1_name}%", drug1_name))
-    drug1 = cursor.fetchone()
+    drug1 = cursor.fetchone() or _find_drug_by_brand(cursor, drug1_name)
 
     cursor.execute(drug_lookup, (f"%{drug2_name}%", drug2_name))
-    drug2 = cursor.fetchone()
+    drug2 = cursor.fetchone() or _find_drug_by_brand(cursor, drug2_name)
 
     if drug1 and drug2:
         cursor.execute("""
@@ -495,16 +589,32 @@ def check_interaction():
 SEVERITY_ORDER = {"Major": 1, "Moderate": 2, "Minor": 3}
 
 
-def _resolve_drug(cursor, name):
-    """Match a typed drug name to a drug in the database.
-    Exact match on brand or generic name first; otherwise accept a partial
-    match only when it is unambiguous (exactly one drug)."""
+def _find_drug_by_brand(cursor, name):
+    cursor.execute("""
+        SELECT d.* FROM brand_names b
+        JOIN drugs d ON d.id = b.drug_id
+        WHERE LOWER(b.brand) = LOWER(%s)
+        LIMIT 1
+    """, (name.strip(),))
+    return cursor.fetchone()
+
+
+def _find_drug_exact(cursor, name):
+    """Exact match on the drug's name or generic name, then on a brand name."""
     cursor.execute("""
         SELECT * FROM drugs
         WHERE LOWER(name) = LOWER(%s) OR LOWER(generic_name) = LOWER(%s)
+        ORDER BY (LOWER(name) = LOWER(%s)) DESC
         LIMIT 1
-    """, (name, name))
-    row = cursor.fetchone()
+    """, (name, name, name))
+    return cursor.fetchone() or _find_drug_by_brand(cursor, name)
+
+
+def _resolve_drug(cursor, name):
+    """Match a typed drug name to a drug in the database.
+    Exact match on name, generic name or brand name first; otherwise accept a
+    partial match only when it is unambiguous (exactly one drug)."""
+    row = _find_drug_exact(cursor, name)
     if row:
         return row
 
@@ -512,6 +622,21 @@ def _resolve_drug(cursor, name):
     rows = cursor.fetchall()
     if len(rows) == 1:
         return rows[0]
+    return None
+
+
+def _resolve_printed_name(cursor, text):
+    """Match a name as printed on packaging, which often carries a salt or form
+    after the drug name ("warfarin sodium"). Exact matches only, dropping up to
+    two trailing words — a name read from a photo must never be guessed at."""
+    words = " ".join(str(text).split()).split(" ")
+    for keep in range(len(words), max(len(words) - 3, 0), -1):
+        candidate = " ".join(words[:keep])
+        if len(candidate) < 3:
+            break
+        row = _find_drug_exact(cursor, candidate)
+        if row:
+            return row
     return None
 
 
@@ -548,13 +673,40 @@ def check_medication_list():
         else:
             unrecognized.append(name)
 
+    # Tell the user when a typed name (a brand, say) was checked as another drug,
+    # and when two entries turn out to be the same drug.
+    matched = [
+        {"entered": name, "drug": drug["name"]}
+        for name, drug in resolved.items()
+        if name.lower() != drug["name"].lower()
+    ]
+    by_drug = defaultdict(list)
+    for name, drug in resolved.items():
+        by_drug[drug["name"]].append(name)
+    duplicates = [
+        {"drug": drug_name, "entered": entered}
+        for drug_name, entered in by_drug.items()
+        if len(entered) > 1
+    ]
+
     flags = []
     pairs_checked = 0
+    seen_pairs = set()
     for i in range(len(names)):
         for j in range(i + 1, len(names)):
             name_a, name_b = names[i], names[j]
-            pairs_checked += 1
             drug_a, drug_b = resolved.get(name_a), resolved.get(name_b)
+
+            # Two entries for the same drug (a brand and its generic) would
+            # otherwise repeat every flag; the duplicate is reported separately.
+            if drug_a and drug_b:
+                if drug_a["id"] == drug_b["id"]:
+                    continue
+                pair = frozenset((drug_a["id"], drug_b["id"]))
+                if pair in seen_pairs:
+                    continue
+                seen_pairs.add(pair)
+            pairs_checked += 1
 
             # A DDInter entry has a severity but no detail, so a community
             # submission for the same pair is shown in its place when one exists.
@@ -636,12 +788,175 @@ def check_medication_list():
         "pairs_checked": pairs_checked,
         "flags": flags,
         "unrecognized": unrecognized,
+        "matched": matched,
+        "duplicates": duplicates,
         "counts": {
             "major": sum(1 for f in flags if severity_rank(f) == 1),
             "moderate": sum(1 for f in flags if severity_rank(f) == 2),
             "minor": sum(1 for f in flags if severity_rank(f) == 3),
         },
     })
+
+
+PHOTO_INSTRUCTIONS = """You read medicine packaging for a drug interaction checker. Look at the photo \
+(a medicine box, blister pack, bottle label or prescription) and list each medicine shown.
+
+For each medicine give:
+- brand_name: the brand or product name printed on it, or "" if none is visible.
+- active_ingredients: the generic name of each active ingredient, one per entry, without salt form, strength \
+or dose form ("warfarin", not "warfarin sodium 5 mg tablets"). Use the name as printed; if it is printed in \
+another language, give the English generic name.
+- ingredients_printed: true if you read the active ingredients from the packaging; false if they are not \
+legible and you are giving them from the brand name alone. Only do that for a brand you are sure of; \
+otherwise leave active_ingredients empty.
+
+Report only what the photo shows. Do not guess at text you cannot read, and ignore people's names, \
+addresses and other personal details. If the photo shows no medicine, return an empty list."""
+
+PHOTO_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "medicines": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "brand_name": {"type": "string"},
+                    "active_ingredients": {"type": "array", "items": {"type": "string"}},
+                    "ingredients_printed": {"type": "boolean"},
+                },
+                "required": ["brand_name", "active_ingredients", "ingredients_printed"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["medicines"],
+    "additionalProperties": False,
+}
+
+_photo_requests = defaultdict(deque)
+
+
+def _photo_limit_reached(visitor):
+    """Each photo costs money to read, so cap how many one visitor can send."""
+    now = time.time()
+    recent = _photo_requests[visitor]
+    while recent and now - recent[0] > PHOTO_LIMIT_SECONDS:
+        recent.popleft()
+    if len(recent) >= PHOTO_LIMIT_COUNT:
+        return True
+    recent.append(now)
+    return False
+
+
+def _image_media_type(image_bytes):
+    if image_bytes[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if image_bytes[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if image_bytes[:4] == b"GIF8":
+        return "image/gif"
+    if image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def read_medicines_from_photo(image_bytes, media_type):
+    """Returns the medicines Claude reads from the photo, as a list of
+    {"brand_name", "active_ingredients", "ingredients_printed"} dicts."""
+    import anthropic
+    import base64
+
+    client = anthropic.Anthropic()
+    response = client.beta.messages.create(
+        model=PHOTO_MODEL,
+        max_tokens=16000,
+        betas=["server-side-fallback-2026-07-01"],
+        fallbacks="default",
+        system=PHOTO_INSTRUCTIONS,
+        output_config={"effort": "low", "format": {"type": "json_schema", "schema": PHOTO_SCHEMA}},
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": base64.standard_b64encode(image_bytes).decode("utf-8"),
+                }},
+                {"type": "text", "text": "List the medicines shown in this photo."},
+            ],
+        }],
+    )
+    if response.stop_reason != "end_turn":
+        raise ValueError(f"photo read stopped early: {response.stop_reason}")
+    text = next(block.text for block in response.content if block.type == "text")
+    return json.loads(text)["medicines"]
+
+
+@app.route("/api/read-drug-photo", methods=["POST"])
+def read_drug_photo():
+    """Reads drug names from a photo and matches them to the database. Nothing is
+    added to a list here — the page shows the result for the user to confirm."""
+    if not photo_reading_enabled():
+        return jsonify({"error": "Photo reading is not set up on this server."}), 503
+
+    visitor = (request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0]).strip()
+    if _photo_limit_reached(visitor):
+        return jsonify({"error": "Too many photos in a short time. Please wait a few minutes and try again."}), 429
+
+    photo = request.files.get("photo")
+    image_bytes = photo.read() if photo else b""
+    if not image_bytes:
+        return jsonify({"error": "Choose or take a photo first."}), 400
+    if len(image_bytes) > PHOTO_MAX_BYTES:
+        return jsonify({"error": "That photo is too large. Please use one under 5 MB."}), 400
+    media_type = _image_media_type(image_bytes)
+    if media_type not in PHOTO_MEDIA_TYPES:
+        return jsonify({"error": "That file is not a photo this app can read. Use a JPG, PNG or WEBP."}), 400
+
+    try:
+        medicines = read_medicines_from_photo(image_bytes, media_type)
+    except Exception:
+        app.logger.exception("Reading a drug photo failed")
+        return jsonify({"error": "The photo could not be read just now. Please try again, or type the names instead."}), 502
+
+    conn = get_db()
+    cursor = conn.cursor()
+    recognized = []
+    unrecognized = []
+    seen_drugs = set()
+    seen_unknown = set()
+
+    def add_unknown(label):
+        label = " ".join(str(label).split())[:80]
+        if label and label.lower() not in seen_unknown:
+            seen_unknown.add(label.lower())
+            unrecognized.append(label)
+
+    for medicine in medicines[:20]:
+        brand = " ".join(str(medicine.get("brand_name") or "").split())[:80]
+        ingredients = [" ".join(str(item).split())[:80] for item in (medicine.get("active_ingredients") or [])[:10]]
+        ingredients = [item for item in ingredients if item]
+        printed = bool(medicine.get("ingredients_printed"))
+
+        # Ingredients first; the brand name only when no ingredient was given.
+        candidates = [(item, printed) for item in ingredients] or ([(brand, True)] if brand else [])
+        for label, was_printed in candidates:
+            drug = _resolve_printed_name(cursor, label)
+            if not drug:
+                add_unknown(label)
+            elif drug["id"] not in seen_drugs:
+                seen_drugs.add(drug["id"])
+                recognized.append({
+                    "drug": drug["name"],
+                    "read": label,
+                    "brand": brand,
+                    "ingredients_printed": was_printed,
+                })
+
+    cursor.close()
+    conn.close()
+    return jsonify({"recognized": recognized, "unrecognized": unrecognized})
 
 
 @app.route("/api/drug-interactions/<int:drug_id>")
