@@ -291,6 +291,68 @@
             margin-top: 20px;
         }
 
+
+        .medlist-row { display: flex; gap: 12px; align-items: flex-end; }
+        .medlist-row .input-group { flex: 1; }
+        .add-btn {
+            padding: 12px 22px;
+            background: #234e52;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .add-btn:hover { background: #2c7a7b; }
+        .med-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; min-height: 8px; }
+        .med-chip {
+            background: #e6fffa;
+            border: 1px solid #81e6d9;
+            border-radius: 20px;
+            padding: 6px 12px;
+            font-size: 13px;
+            font-weight: 600;
+            color: #234e52;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .med-chip button {
+            background: none;
+            border: none;
+            color: #234e52;
+            font-size: 16px;
+            cursor: pointer;
+            line-height: 1;
+        }
+        .flag-summary {
+            border-radius: 10px;
+            padding: 14px 18px;
+            font-size: 14px;
+            font-weight: 600;
+            margin-top: 8px;
+        }
+        .flag-summary.flagged { background: #fff5f5; border: 2px solid #fc8181; color: #c53030; }
+        .flag-summary.clear { background: #fffbeb; border: 2px solid #f6e05e; color: #744210; }
+        .flag-item {
+            border-radius: 10px;
+            padding: 16px;
+            margin-top: 12px;
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-left-width: 6px;
+        }
+        .flag-item.major { border-left-color: #c53030; }
+        .flag-item.moderate { border-left-color: #dd6b20; }
+        .flag-item.minor { border-left-color: #d69e2e; }
+        .flag-item .flag-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+        .flag-item p { font-size: 13px; line-height: 1.6; color: #444; margin-bottom: 6px; }
+        .source-tag { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px; }
+        .source-tag.verified { background: #e6fffa; color: #234e52; }
+        .source-tag.community { background: #edf2f7; color: #4a5568; }
+        .medlist-note { font-size: 12px; color: #744210; background: #fffbeb; border: 1px solid #f6e05e; border-radius: 8px; padding: 12px; margin-top: 14px; line-height: 1.5; }
+
         @media (max-width: 600px) {
             .drug-inputs { grid-template-columns: 1fr; }
             .vs-badge { display: none; }
@@ -319,7 +381,27 @@
     </div>
 
     <div class="checker-section">
-        <h2>Check Drug Interaction</h2>
+        <h2>Check a Medication List</h2>
+        <p style="font-size:13px; color:#666; margin-bottom:18px;">Add all the medications a patient is taking. Every pair is checked automatically and any known interaction is flagged.</p>
+
+        <div class="medlist-row">
+            <div class="input-group">
+                <label>Add a medication</label>
+                <input type="text" id="medlist-input" placeholder="e.g. Warfarin" oninput="searchMedList(this)" onkeydown="if(event.key==='Enter'){event.preventDefault();addMedFromInput();}" autocomplete="off">
+                <div class="autocomplete-list" id="medlist-suggestions" style="display:none;"></div>
+            </div>
+            <button class="add-btn" type="button" onclick="addMedFromInput()">Add</button>
+        </div>
+
+        <div class="med-chips" id="med-chips"></div>
+
+        <button class="check-btn" type="button" onclick="runMedListCheck()">Check All Interactions</button>
+
+        <div id="medlist-result" style="display:none;"></div>
+    </div>
+
+    <div class="checker-section">
+        <h2>Check a Single Pair of Drugs</h2>
 
         <div class="drug-inputs">
             <div class="input-group">
@@ -565,6 +647,131 @@
         }
 
         resultSection.scrollIntoView({ behavior: 'smooth' });
+    }
+
+
+    // ---------- Medication list auto-check ----------
+    let medList = [];
+
+    function escapeHtml(value) {
+        return String(value === null || value === undefined ? '' : value)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    async function searchMedList(input) {
+        const query = input.value.trim();
+        const list = document.getElementById('medlist-suggestions');
+        if (query.length < 2) { list.style.display = 'none'; return; }
+        const response = await fetch(`/api/search-drugs?q=${encodeURIComponent(query)}`);
+        const drugs = await response.json();
+        if (!drugs.length) { list.style.display = 'none'; return; }
+        list.innerHTML = '';
+        drugs.forEach(drug => {
+            const item = document.createElement('div');
+            item.className = 'autocomplete-item';
+            item.innerHTML = `${escapeHtml(drug.name)}<div class="drug-class">${escapeHtml(drug.drug_class)}</div>`;
+            item.addEventListener('click', () => addMed(drug.name));
+            list.appendChild(item);
+        });
+        list.style.display = 'block';
+    }
+
+    function addMedFromInput() {
+        const input = document.getElementById('medlist-input');
+        const value = input.value.trim();
+        if (value) addMed(value);
+    }
+
+    function addMed(name) {
+        const clean = name.trim();
+        if (!clean) return;
+        if (!medList.some(m => m.toLowerCase() === clean.toLowerCase())) {
+            medList.push(clean);
+        }
+        document.getElementById('medlist-input').value = '';
+        document.getElementById('medlist-suggestions').style.display = 'none';
+        renderMedChips();
+        if (medList.length >= 2) runMedListCheck();
+    }
+
+    function removeMed(index) {
+        medList.splice(index, 1);
+        renderMedChips();
+        if (medList.length >= 2) {
+            runMedListCheck();
+        } else {
+            document.getElementById('medlist-result').style.display = 'none';
+        }
+    }
+
+    function renderMedChips() {
+        const box = document.getElementById('med-chips');
+        box.innerHTML = '';
+        medList.forEach((name, index) => {
+            const chip = document.createElement('div');
+            chip.className = 'med-chip';
+            chip.innerHTML = `${escapeHtml(name)} <button type="button" aria-label="Remove ${escapeHtml(name)}">&times;</button>`;
+            chip.querySelector('button').addEventListener('click', () => removeMed(index));
+            box.appendChild(chip);
+        });
+    }
+
+    async function runMedListCheck() {
+        const out = document.getElementById('medlist-result');
+        out.style.display = 'block';
+
+        if (medList.length < 2) {
+            out.innerHTML = '<div class="flag-summary clear">Add at least two medications to check.</div>';
+            return;
+        }
+
+        const response = await fetch('/api/check-medication-list', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ drugs: medList })
+        });
+        const data = await response.json();
+
+        if (data.error) {
+            out.innerHTML = `<div class="flag-summary flagged">${escapeHtml(data.error)}</div>`;
+            return;
+        }
+
+        const total = data.flags.length;
+        let html = '';
+
+        if (total > 0) {
+            const c = data.counts;
+            html += `<div class="flag-summary flagged">${total} interaction${total === 1 ? '' : 's'} flagged among ${data.pairs_checked} pair${data.pairs_checked === 1 ? '' : 's'} checked (${c.major} major, ${c.moderate} moderate, ${c.minor} minor)</div>`;
+            data.flags.forEach(f => {
+                const sev = String(f.severity || '');
+                const cls = sev.toLowerCase();
+                const sourceTag = f.source === 'verified'
+                    ? '<span class="source-tag verified">Verified database</span>'
+                    : `<span class="source-tag community">Community submitted, not independently verified${f.submitted_by ? ' (' + escapeHtml(f.submitted_by) + (f.submitter_profession ? ', ' + escapeHtml(f.submitter_profession) : '') + ')' : ''}</span>`;
+                html += `
+                    <div class="flag-item ${escapeHtml(cls)}">
+                        <div class="flag-head">
+                            <strong>${escapeHtml(f.drug1)} + ${escapeHtml(f.drug2)}</strong>
+                            <span><span class="severity-badge ${escapeHtml(sev)}">${escapeHtml(sev)}</span> ${sourceTag}</span>
+                        </div>
+                        <p>${escapeHtml(f.description)}</p>
+                        ${f.clinical_effects ? `<p><strong>Clinical effects:</strong> ${escapeHtml(f.clinical_effects)}</p>` : ''}
+                        ${f.management ? `<p><strong>Management:</strong> ${escapeHtml(f.management)}</p>` : ''}
+                    </div>`;
+            });
+        } else {
+            html += `<div class="flag-summary clear">No known interactions found among these medications (${data.pairs_checked} pair${data.pairs_checked === 1 ? '' : 's'} checked). This does not mean the combination is safe.</div>`;
+        }
+
+        if (data.unrecognized.length) {
+            html += `<div class="medlist-note"><strong>Not in the database, so not fully checked:</strong> ${data.unrecognized.map(escapeHtml).join(', ')}. Interactions involving these medications may exist and would not be flagged.</div>`;
+        }
+
+        html += `<div class="medlist-note">The database holds a limited set of interactions. The absence of a flag is not evidence that a combination is safe. Always confirm with a pharmacist or current prescribing references.</div>`;
+
+        out.innerHTML = html;
     }
 
     document.addEventListener('click', function(e) {

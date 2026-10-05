@@ -85,9 +85,7 @@ def create_database():
 def seed_drug_data(conn):
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) as count FROM drugs")
-    if cursor.fetchone()["count"] > 0:
-        cursor.close()
-        return
+    drugs_already_seeded = cursor.fetchone()["count"] > 0
 
     drugs = [
         ("Warfarin", "Warfarin Sodium", "Anticoagulant", "Blood thinner used to prevent blood clots", "DVT, Pulmonary embolism, Atrial fibrillation"),
@@ -117,13 +115,22 @@ def seed_drug_data(conn):
         ("Insulin", "Insulin", "Antidiabetic Hormone", "Used to control blood sugar in diabetes", "Type 1 Diabetes, Type 2 Diabetes"),
     ]
 
-    execute_values(cursor, """
-        INSERT INTO drugs (name, generic_name, drug_class, description, common_uses)
-        VALUES %s
-        ON CONFLICT (name) DO NOTHING
-    """, drugs)
+    if not drugs_already_seeded:
+        execute_values(cursor, """
+            INSERT INTO drugs (name, generic_name, drug_class, description, common_uses)
+            VALUES %s
+            ON CONFLICT (name) DO NOTHING
+        """, drugs)
+        conn.commit()
 
-    conn.commit()
+    # Check interactions independently of drugs — if a previous deploy seeded
+    # drugs but was interrupted (crash/restart) before interactions were
+    # inserted, this makes sure interactions still get backfilled instead of
+    # being skipped forever.
+    cursor.execute("SELECT COUNT(*) as count FROM interactions")
+    if cursor.fetchone()["count"] > 0:
+        cursor.close()
+        return
 
     cursor.execute("SELECT id, name FROM drugs")
     drug_map = {row["name"]: row["id"] for row in cursor.fetchall()}
@@ -396,6 +403,133 @@ def check_interaction():
 
     return jsonify({
         "error": f"Drug not found: {drug1_name if not drug1 else drug2_name}. You can submit this interaction manually if you have clinical knowledge of it."
+    })
+
+
+SEVERITY_ORDER = {"Major": 1, "Moderate": 2, "Minor": 3}
+
+
+def _resolve_drug(cursor, name):
+    """Match a typed drug name to a drug in the database.
+    Exact match on brand or generic name first; otherwise accept a partial
+    match only when it is unambiguous (exactly one drug)."""
+    cursor.execute("""
+        SELECT * FROM drugs
+        WHERE LOWER(name) = LOWER(%s) OR LOWER(generic_name) = LOWER(%s)
+        LIMIT 1
+    """, (name, name))
+    row = cursor.fetchone()
+    if row:
+        return row
+
+    cursor.execute("SELECT * FROM drugs WHERE name ILIKE %s LIMIT 2", (f"%{name}%",))
+    rows = cursor.fetchall()
+    if len(rows) == 1:
+        return rows[0]
+    return None
+
+
+@app.route("/api/check-medication-list", methods=["POST"])
+def check_medication_list():
+    """Automatically flag every known interaction within a list of medications."""
+    data = request.get_json(silent=True) or {}
+    raw_names = data.get("drugs", [])
+
+    names = []
+    seen = set()
+    if isinstance(raw_names, list):
+        for item in raw_names:
+            if isinstance(item, str) and item.strip():
+                key = item.strip().lower()
+                if key not in seen:
+                    seen.add(key)
+                    names.append(item.strip())
+
+    if len(names) < 2:
+        return jsonify({"error": "Add at least two different medications to check."}), 400
+    if len(names) > 20:
+        return jsonify({"error": "Please check 20 medications or fewer at a time."}), 400
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    resolved = {}
+    unrecognized = []
+    for name in names:
+        drug = _resolve_drug(cursor, name)
+        if drug:
+            resolved[name] = drug
+        else:
+            unrecognized.append(name)
+
+    flags = []
+    pairs_checked = 0
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            name_a, name_b = names[i], names[j]
+            pairs_checked += 1
+            drug_a, drug_b = resolved.get(name_a), resolved.get(name_b)
+
+            if drug_a and drug_b and drug_a["id"] != drug_b["id"]:
+                cursor.execute("""
+                    SELECT * FROM interactions
+                    WHERE (drug1_id = %s AND drug2_id = %s)
+                       OR (drug1_id = %s AND drug2_id = %s)
+                    LIMIT 1
+                """, (drug_a["id"], drug_b["id"], drug_b["id"], drug_a["id"]))
+                row = cursor.fetchone()
+                if row:
+                    flags.append({
+                        "drug1": drug_a["name"],
+                        "drug2": drug_b["name"],
+                        "severity": row["severity"],
+                        "description": row["description"],
+                        "clinical_effects": row["clinical_effects"],
+                        "management": row["management"],
+                        "source": "verified",
+                    })
+                    continue
+
+            label_a = drug_a["name"] if drug_a else name_a
+            label_b = drug_b["name"] if drug_b else name_b
+            cursor.execute("""
+                SELECT si.*, sub.name AS submitter_name, sub.profession
+                FROM submitted_interactions si
+                JOIN submitters sub ON si.submitter_id = sub.id
+                WHERE (LOWER(TRIM(si.drug1_name)) = LOWER(%s) AND LOWER(TRIM(si.drug2_name)) = LOWER(%s))
+                   OR (LOWER(TRIM(si.drug1_name)) = LOWER(%s) AND LOWER(TRIM(si.drug2_name)) = LOWER(%s))
+                ORDER BY si.submitted_at DESC
+                LIMIT 1
+            """, (label_a, label_b, label_b, label_a))
+            row = cursor.fetchone()
+            if row:
+                flags.append({
+                    "drug1": label_a,
+                    "drug2": label_b,
+                    "severity": row["severity"],
+                    "description": row["description"],
+                    "clinical_effects": row["clinical_effects"],
+                    "management": row["management"],
+                    "source": "community",
+                    "submitted_by": row["submitter_name"],
+                    "submitter_profession": row["profession"],
+                })
+
+    cursor.close()
+    conn.close()
+
+    flags.sort(key=lambda f: (SEVERITY_ORDER.get(f["severity"], 4), f["source"] != "verified"))
+
+    return jsonify({
+        "checked": names,
+        "pairs_checked": pairs_checked,
+        "flags": flags,
+        "unrecognized": unrecognized,
+        "counts": {
+            "major": sum(1 for f in flags if f["severity"] == "Major"),
+            "moderate": sum(1 for f in flags if f["severity"] == "Moderate"),
+            "minor": sum(1 for f in flags if f["severity"] == "Minor"),
+        },
     })
 
 
